@@ -105,6 +105,50 @@ def list_directory(path: str = Query(default="/"), user: str = Depends(authentic
         raise HTTPException(status_code=403, detail="Permission refusée")
 
 
+@app.get("/api/folder-hardlinks")
+def folder_hardlinks(path: str = Query(default="/"), user: str = Depends(authenticate)):
+    """Count hardlinked files inside each immediate subfolder, with a bounded scan."""
+    base = safe_path(path)
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(status_code=404, detail="Dossier introuvable")
+
+    counts = {}
+    visited = 0
+    truncated = False
+    scan_limit = 20000
+
+    try:
+        for current, dirs, filenames in os.walk(base, followlinks=False):
+            dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
+            entries = [(name, True) for name in dirs] + [(name, False) for name in filenames]
+            for name, is_dir in entries:
+                entry = Path(current) / name
+                visited += 1
+                if visited > scan_limit:
+                    truncated = True
+                    break
+                if entry.is_symlink():
+                    continue
+                try:
+                    relative = entry.relative_to(base)
+                    # Attribute descendant files to the immediate subfolder being scanned.
+                    if len(relative.parts) < 2 or is_dir:
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    if st.st_nlink > 1 and entry.is_file():
+                        folder_path = "/" + str(relative.parts[0])
+                        counts[folder_path] = counts.get(folder_path, 0) + 1
+                except (OSError, ValueError):
+                    continue
+            if truncated:
+                break
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission refusée pendant l'analyse")
+
+    return {"path": "/" if base == ROOT else "/" + str(base.relative_to(ROOT)),
+            "folders": counts, "scanned": min(visited, scan_limit), "truncated": truncated}
+
+
 @app.get("/api/info")
 def info(path: str = Query(...), user: str = Depends(authenticate)):
     target = safe_path(path)
