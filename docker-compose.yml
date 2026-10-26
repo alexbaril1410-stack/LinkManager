@@ -1,23 +1,23 @@
 services:
   linkmanager:
-    build: .
+    image: ghcr.io/alexbaril1410-stack/linkmanager:latest
     container_name: linkmanager
     restart: unless-stopped
     init: true
     ports:
-      - "${LINKMANAGER_PORT:-8088}:8080"
+      - "8088:8080"
     environment:
       MEDIA_ROOT: /media
-      LINKMANAGER_USER: ${LINKMANAGER_USER:-admin}
-      LINKMANAGER_PASSWORD: ${LINKMANAGER_PASSWORD:?Set LINKMANAGER_PASSWORD in .env}
-      ALLOW_LINK_CREATION: ${ALLOW_LINK_CREATION:-true}
-      MAX_LIST_ITEMS: ${MAX_LIST_ITEMS:-1000}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LINKMANAGER_USER: "admin"
+      # À remplacer par un mot de passe long et unique avant le déploiement.
+      LINKMANAGER_PASSWORD: "CHANGE-ME-TO-A-LONG-RANDOM-PASSWORD"
+      ALLOW_LINK_CREATION: "true"
+      MAX_LIST_ITEMS: "1000"
+      LOG_LEVEL: "INFO"
     volumes:
-      # IMPORTANT: /media must be the common host path containing all relevant
-      # data and must preserve the same underlying filesystem layout.
+      # Remplacer par le chemin hôte commun des médias et téléchargements.
       - type: bind
-        source: ${MEDIA_HOST_PATH:?Set MEDIA_HOST_PATH to the host's common media path}
+        source: /path/on/host/media
         target: /media
         bind:
           create_host_path: false
