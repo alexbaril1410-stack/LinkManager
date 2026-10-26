@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LinkManager</title>
+<style>
+:root{color-scheme:dark;--bg:#10131b;--panel:#191e2a;--panel2:#22293a;--line:#30384b;--text:#eef1fa;--muted:#9ba6bd;--accent:#8da2ff;--green:#75d6a3;--amber:#e7bd70;--red:#ff8585}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+header{height:66px;display:flex;align-items:center;gap:12px;padding:0 24px;border-bottom:1px solid var(--line);background:#141824;position:sticky;top:0;z-index:2}
+.logo{font-size:20px;font-weight:750;letter-spacing:-.5px}.logo span{color:var(--accent)}.grow{flex:1}
+button,input{font:inherit}button{cursor:pointer;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--text);padding:9px 12px}button:hover{border-color:var(--accent)}button.primary{background:#6378e8;border-color:#6378e8;color:white}button:disabled{opacity:.45;cursor:not-allowed}
+main{max-width:1500px;margin:auto;padding:24px}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:20px}.stat,.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px}.stat{padding:16px}.stat .label{color:var(--muted);font-size:12px}.stat .value{font-size:21px;font-weight:700;margin-top:5px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}.path{flex:1;min-width:180px;color:var(--muted);padding:9px 12px;background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow-wrap:anywhere}
+.panel{overflow:hidden}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:720px}th{text-align:left;color:var(--muted);font-size:12px;font-weight:600;background:#1c2230}th,td{padding:12px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}tbody tr:hover{background:#202638}tr.selected{background:#252e49}.namecell{display:flex;gap:10px;align-items:center}.fileicon{font-size:18px;width:22px;text-align:center}.filename{overflow-wrap:anywhere}.sub{font-size:11px;color:var(--muted)}.pill{display:inline-flex;border-radius:99px;padding:3px 8px;font-size:11px;background:#30384b;color:#c5cce0}.pill.yes{background:#193b31;color:var(--green)}.pill.no{background:#393126;color:var(--amber)}.muted{color:var(--muted)}.status{min-height:24px;margin:12px 0;color:var(--muted)}.detail{padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.detail h3{margin:0 0 8px}.detail .full{grid-column:1/-1}.field{display:flex;flex-direction:column;gap:6px}.field input{border:1px solid var(--line);border-radius:8px;padding:10px;background:#101520;color:var(--text);min-width:0}.actions{display:flex;gap:8px;flex-wrap:wrap}.empty{text-align:center;padding:36px;color:var(--muted)}footer{color:var(--muted);font-size:12px;margin-top:16px}
+@media(max-width:700px){main{padding:14px}.stats{grid-template-columns:1fr}.detail{grid-template-columns:1fr}.detail .full{grid-column:auto}header{padding:0 14px}}
+</style>
+</head>
+<body>
+<header><div class="logo">Link<span>Manager</span></div><div class="grow"></div><span class="muted" id="health">Connexion…</span><button id="refresh">Actualiser</button></header>
+<main>
+<section class="stats">
+ <div class="stat"><div class="label">Éléments affichés</div><div class="value" id="count">—</div></div>
+ <div class="stat"><div class="label">Fichiers avec plusieurs hardlinks</div><div class="value" id="linked">—</div></div>
+ <div class="stat"><div class="label">Dossier actuel</div><div class="value" id="current" style="font-size:14px;overflow-wrap:anywhere">/</div></div>
+</section>
+<div class="toolbar"><button id="up">↑ Parent</button><div class="path" id="path">/</div><input id="search" placeholder="Rechercher dans le dossier…" style="padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--text);min-width:190px"><button id="searchBtn">Rechercher</button><button id="clearSearch">Effacer</button></div>
+<section class="panel tablewrap"><table><thead><tr><th>Nom</th><th>Type</th><th>Taille</th><th>Hardlinks</th><th>Inode</th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty" hidden>Aucun élément à afficher.</div></section>
+<div class="status" id="status" role="status"></div>
+<section class="panel detail" id="details">
+ <div class="full"><h3>Créer un hardlink</h3><div class="muted">Sélectionne un fichier ordinaire dans la liste, puis choisis le dossier de destination. La source reste intacte.</div></div>
+ <div class="field"><label for="source">Fichier source sélectionné</label><input id="source" readonly placeholder="Sélectionne un fichier…"></div>
+ <div class="field"><label for="dest">Dossier de destination</label><input id="dest" value="/" placeholder="/dossier/destination"></div>
+ <div class="field full"><label for="destname">Nom du nouveau lien (facultatif)</label><input id="destname" placeholder="Par défaut : nom du fichier source"></div>
+ <div class="actions full"><button class="primary" id="create" disabled>Créer le hardlink…</button><button id="inspect" disabled>Actualiser les informations</button></div>
+</section>
+<footer>Les liens physiques partagent les mêmes données. Supprimer un nom de fichier ne supprime pas les données tant qu'un autre hardlink existe. Les dossiers symboliques sont ignorés.</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);let currentPath="/",selected=null,items=[];
+function fmtSize(n){if(n==null)return "—";let u=["B","Ko","Mo","Go","To"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${n.toLocaleString("fr-FR",{maximumFractionDigits:1})} ${u[i]}`}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+async function api(url,opts={}){let r=await fetch(url,{...opts,headers:{"Content-Type":"application/json",...(opts.headers||{})}});let d;try{d=await r.json()}catch{d={detail:r.statusText}}if(!r.ok)throw Error(d.detail||"Erreur");return d}
+function status(msg,error=false){$("status").textContent=msg;$("status").style.color=error?"var(--red)":"var(--muted)"}
+function render(list){items=list;$("rows").innerHTML="";$("empty").hidden=!!list.length;$("count").textContent=list.length;$("linked").textContent=list.filter(x=>x.type==="file"&&x.nlink>1).length;
+for(const x of list){let tr=document.createElement("tr");tr.dataset.path=x.path;let icon=x.type==="directory"?"📁":x.type==="symlink"?"🔗":x.type==="file"?"📄":"•";let hard=x.type==="file"?(x.nlink>1?`<span class="pill yes">Lié × ${x.nlink}</span>`:`<span class="pill no">Isolé</span>`):x.type==="symlink"?'<span class="pill">Lien symbolique</span>':'—';
+tr.innerHTML=`<td><div class="namecell"><span class="fileicon">${icon}</span><div><div class="filename">${esc(x.name)}</div><div class="sub">${esc(x.path)}</div></div></div></td><td>${esc(x.type)}</td><td>${fmtSize(x.size)}</td><td>${hard}</td><td>${x.inode??"—"}</td>`;
+tr.onclick=()=>{document.querySelectorAll("tbody tr").forEach(r=>r.classList.remove("selected"));tr.classList.add("selected");selected=x;$("source").value=x.type==="file"?x.path:"";$("create").disabled=x.type!=="file";$("inspect").disabled=x.type!=="file";status(x.type==="file"?`Source sélectionnée : ${x.path}`:"Sélectionne un fichier pour créer un hardlink.")};
+tr.ondblclick=()=>{if(x.type==="directory")load(x.path)};$("rows").appendChild(tr)}}
+async function load(path=currentPath){try{let d=await api("/api/list?path="+encodeURIComponent(path));currentPath=d.path;$("path").textContent=d.path;$("current").textContent=d.path;$("up").disabled=!d.parent;render(d.items);status(d.truncated?"Liste tronquée : trop d'éléments dans ce dossier.":"Double-clique sur un dossier pour l'ouvrir.");}catch(e){status(e.message,true)}}
+async function search(){let q=$("search").value.trim();if(!q)return load();try{let d=await api("/api/search?q="+encodeURIComponent(q)+"&path="+encodeURIComponent(currentPath));render(d.results);status(`Recherche terminée : ${d.results.length} résultat(s)${d.truncated?" (résultats limités)":""}.`)}catch(e){status(e.message,true)}}
+$("up").onclick=async()=>{try{let d=await api("/api/list?path="+encodeURIComponent(currentPath));if(d.parent!==null)load(d.parent)}catch(e){status(e.message,true)}};
+$("refresh").onclick=()=>load();$("searchBtn").onclick=search;$("search").addEventListener("keydown",e=>{if(e.key==="Enter")search()});$("clearSearch").onclick=()=>{$("search").value="";load()};
+$("inspect").onclick=async()=>{if(!selected)return;try{let d=await api("/api/info?path="+encodeURIComponent(selected.path));status(`${d.path} — inode ${d.inode}, ${d.nlink} hardlink(s), périphérique ${d.device}.`)}catch(e){status(e.message,true)}};
+$("create").onclick=async()=>{if(!selected)return;let dir=$("dest").value.trim()||"/";let name=$("destname").value.trim()||selected.name;let msg=`Créer un hardlink ?\n\nSource : ${selected.path}\nDestination : ${dir.replace(/\/$/,"")}/${name}\n\nLa destination doit être sur le même système de fichiers. Aucun fichier existant ne sera écrasé.`;if(!confirm(msg))return;
+try{let d=await api("/api/hardlink",{method:"POST",body:JSON.stringify({source:selected.path,destination_directory:dir,destination_name:$("destname").value.trim()||null,confirm:true})});status(`Hardlink créé : ${d.destination}`);$("destname").value="";load(currentPath)}catch(e){status(e.message,true)}};
+(async()=>{try{await api("/api/health");$("health").textContent="Connecté";load("/")}catch(e){$("health").textContent="Authentification / erreur";status(e.message,true)}})();
+</script>
+</body></html>

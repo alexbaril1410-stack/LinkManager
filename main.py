@@ -1,0 +1,180 @@
+import hmac
+import logging
+import os
+import secrets
+from pathlib import Path
+from typing import Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.responses import FileResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel, Field
+
+ROOT = Path(os.getenv("MEDIA_ROOT", "/media")).resolve()
+USERNAME = os.getenv("LINKMANAGER_USER", "admin")
+PASSWORD = os.getenv("LINKMANAGER_PASSWORD", "")
+ALLOW_LINK_CREATION = os.getenv("ALLOW_LINK_CREATION", "true").lower() == "true"
+MAX_LIST_ITEMS = int(os.getenv("MAX_LIST_ITEMS", "1000"))
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("linkmanager")
+app = FastAPI(title="LinkManager", version="0.1.0")
+security = HTTPBasic()
+
+
+def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+    user_ok = secrets.compare_digest(credentials.username, USERNAME)
+    password_ok = bool(PASSWORD) and secrets.compare_digest(credentials.password, PASSWORD)
+    if not (user_ok and password_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentification requise",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+def safe_path(raw: str) -> Path:
+    # Resolve existing symlinks and prevent escaping the configured media root.
+    candidate = (ROOT / raw.lstrip("/")).resolve()
+    try:
+        candidate.relative_to(ROOT)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Chemin hors de /media interdit")
+    return candidate
+
+
+def file_info(path: Path) -> dict:
+    st = path.stat(follow_symlinks=False)
+    is_dir = path.is_dir()
+    return {
+        "name": path.name or "/media",
+        "path": "/" + str(path.relative_to(ROOT)) if path != ROOT else "/",
+        "type": "directory" if is_dir else ("file" if path.is_file() else "other"),
+        "size": st.st_size if path.is_file() else None,
+        "mtime": int(st.st_mtime),
+        "inode": st.st_ino,
+        "device": st.st_dev,
+        "nlink": st.st_nlink,
+        "hardlinked": st.st_nlink > 1,
+    }
+
+
+class LinkRequest(BaseModel):
+    source: str = Field(min_length=1, max_length=4096)
+    destination_directory: str = Field(min_length=1, max_length=4096)
+    destination_name: Optional[str] = Field(default=None, max_length=255)
+    confirm: bool = False
+
+
+@app.get("/")
+def index(user: str = Depends(authenticate)):
+    return FileResponse("app/static/index.html")
+
+
+@app.get("/api/health")
+def health(user: str = Depends(authenticate)):
+    return {"status": "ok", "media_root": str(ROOT), "link_creation_enabled": ALLOW_LINK_CREATION}
+
+
+@app.get("/api/list")
+def list_directory(path: str = Query(default="/"), user: str = Depends(authenticate)):
+    target = safe_path(path)
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(status_code=404, detail="Dossier introuvable")
+    try:
+        items = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold()))
+        results = []
+        for item in items[:MAX_LIST_ITEMS]:
+            try:
+                # Do not follow symlinks when presenting entries.
+                if item.is_symlink():
+                    results.append({
+                        "name": item.name, "path": "/" + str(item.relative_to(ROOT)),
+                        "type": "symlink", "size": None, "mtime": None,
+                        "inode": None, "device": None, "nlink": None, "hardlinked": False,
+                    })
+                else:
+                    results.append(file_info(item))
+            except (OSError, ValueError):
+                continue
+        return {"path": "/" if target == ROOT else "/" + str(target.relative_to(ROOT)),
+                "parent": None if target == ROOT else ("/" if target.parent == ROOT else "/" + str(target.parent.relative_to(ROOT))),
+                "items": results, "truncated": len(items) > MAX_LIST_ITEMS}
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission refusée")
+
+
+@app.get("/api/info")
+def info(path: str = Query(...), user: str = Depends(authenticate)):
+    target = safe_path(path)
+    if not target.exists() or target.is_symlink() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Fichier ordinaire introuvable")
+    return file_info(target)
+
+
+@app.post("/api/hardlink")
+def create_hardlink(payload: LinkRequest, user: str = Depends(authenticate)):
+    if not ALLOW_LINK_CREATION:
+        raise HTTPException(status_code=403, detail="Création de hardlinks désactivée")
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation explicite requise")
+
+    source = safe_path(payload.source)
+    destination_dir = safe_path(payload.destination_directory)
+    if source.is_symlink() or not source.exists() or not source.is_file():
+        raise HTTPException(status_code=400, detail="La source doit être un fichier ordinaire, non symbolique")
+    if destination_dir.is_symlink() or not destination_dir.exists() or not destination_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Le dossier de destination est invalide")
+
+    try:
+        source_stat = source.stat(follow_symlinks=False)
+        destination_stat = destination_dir.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Impossible de lire les métadonnées : {exc}")
+
+    if source_stat.st_dev != destination_stat.st_dev:
+        raise HTTPException(status_code=400, detail="Source et destination ne sont pas sur le même système de fichiers")
+    name = payload.destination_name or source.name
+    if name in ("", ".", "..") or "/" in name or "\\" in name or "\x00" in name:
+        raise HTTPException(status_code=400, detail="Nom de destination invalide")
+    destination = destination_dir / name
+    # Refuse overwrite, even if destination is a symlink.
+    if os.path.lexists(destination):
+        raise HTTPException(status_code=409, detail="Un élément portant ce nom existe déjà")
+
+    try:
+        os.link(source, destination, follow_symlinks=False)
+        logger.info("HARDLINK user=%s source=%s destination=%s", user, source, destination)
+        return {"status": "created", "source": "/" + str(source.relative_to(ROOT)),
+                "destination": "/" + str(destination.relative_to(ROOT))}
+    except OSError as exc:
+        logger.warning("Hardlink failed user=%s source=%s destination=%s error=%s", user, source, destination, exc)
+        raise HTTPException(status_code=400, detail=f"Création impossible : {exc}")
+
+
+@app.get("/api/search")
+def search(q: str = Query(min_length=1, max_length=200), path: str = Query(default="/"),
+           user: str = Depends(authenticate)):
+    base = safe_path(path)
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(status_code=404, detail="Dossier introuvable")
+    query = q.casefold()
+    matches = []
+    visited = 0
+    # Bounded traversal to keep a large library from monopolizing the app.
+    for current, dirs, filenames in os.walk(base, followlinks=False):
+        dirs[:] = [d for d in dirs if not (Path(current) / d).is_symlink()]
+        for name in dirs + filenames:
+            visited += 1
+            p = Path(current) / name
+            if query in name.casefold():
+                try:
+                    if p.is_symlink():
+                        continue
+                    matches.append(file_info(p))
+                except (OSError, ValueError):
+                    pass
+            if visited >= 20000:
+                return {"results": matches[:500], "truncated": True, "scanned": visited}
+    return {"results": matches[:500], "truncated": len(matches) > 500, "scanned": visited}
