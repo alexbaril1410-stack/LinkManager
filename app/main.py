@@ -178,3 +178,4 @@ def search(q: str = Query(min_length=1, max_length=200), path: str = Query(defau
             if visited >= 20000:
                 return {"results": matches[:500], "truncated": True, "scanned": visited}
     return {"results": matches[:500], "truncated": len(matches) > 500, "scanned": visited}
+
