@@ -1,0 +1,36 @@
+services:
+  linkmanager:
+    build: .
+    container_name: linkmanager
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${LINKMANAGER_PORT:-8088}:8080"
+    environment:
+      MEDIA_ROOT: /media
+      LINKMANAGER_USER: ${LINKMANAGER_USER:-admin}
+      LINKMANAGER_PASSWORD: ${LINKMANAGER_PASSWORD:?Set LINKMANAGER_PASSWORD in .env}
+      ALLOW_LINK_CREATION: ${ALLOW_LINK_CREATION:-true}
+      MAX_LIST_ITEMS: ${MAX_LIST_ITEMS:-1000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # IMPORTANT: /media must be the common host path containing all relevant
+      # data and must preserve the same underlying filesystem layout.
+      - type: bind
+        source: ${MEDIA_HOST_PATH:?Set MEDIA_HOST_PATH to the host's common media path}
+        target: /media
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - linkmanager_net
+
+networks:
+  linkmanager_net:
+    driver: bridge
