@@ -5,7 +5,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && useradd --system --uid 10001 --create-home appuser
 COPY app ./app
-RUN chown -R appuser:appuser /app
+RUN python -m compileall -q app \
+    && chown -R appuser:appuser /app
 USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
