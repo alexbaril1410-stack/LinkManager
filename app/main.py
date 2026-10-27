@@ -233,6 +233,42 @@ def _json_request(url: str, headers: dict | None = None, opener=None, data: byte
         return body.decode("utf-8", errors="replace").strip(), response.status
 
 
+def _path_map(service: str) -> list[dict]:
+    raw = os.getenv(f"{service.upper()}_PATH_MAP", "").strip()
+    if not raw:
+        return []
+    try:
+        mappings = json.loads(raw)
+        if not isinstance(mappings, list):
+            return []
+        valid = []
+        for item in mappings:
+            if not isinstance(item, dict):
+                continue
+            remote = item.get("remote")
+            local = item.get("local")
+            if isinstance(remote, str) and isinstance(local, str) and remote.startswith("/") and local.startswith("/") and "\\x00" not in remote + local:
+                valid.append({"remote": remote.rstrip("/") or "/", "local": local.rstrip("/") or "/"})
+        return sorted(valid, key=lambda item: len(item["remote"]), reverse=True)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _map_service_path(service: str, remote_path: str) -> str | None:
+    if not isinstance(remote_path, str) or not remote_path.startswith("/"):
+        return None
+    candidate = Path(remote_path)
+    for mapping in _path_map(service):
+        prefix = Path(mapping["remote"])
+        try:
+            relative = candidate.relative_to(prefix)
+        except ValueError:
+            continue
+        suffix = str(relative)
+        return mapping["local"] if suffix == "." else mapping["local"].rstrip("/") + "/" + suffix
+    return None
+
+
 def _api_status(service: str) -> dict:
     cfg = _integration_config(service)
     if not cfg["url"]:
@@ -333,7 +369,9 @@ def integrations(user: str = Depends(authenticate)):
                         "name": str(t.get("name", ""))[:240],
                         "state": str(t.get("state", ""))[:80],
                         "save_path": str(t.get("save_path", ""))[:1024],
+                        "save_path_linkmanager": _map_service_path("QBITTORRENT", str(t.get("save_path", ""))),
                         "content_path": str(t.get("content_path", ""))[:1024],
+                        "content_path_linkmanager": _map_service_path("QBITTORRENT", str(t.get("content_path", ""))),
                         "size": t.get("size") if isinstance(t.get("size"), (int, float)) else None,
                         "progress": t.get("progress") if isinstance(t.get("progress"), (int, float)) else None,
                     } for t in torrents[:30]],
@@ -354,7 +392,7 @@ def integrations(user: str = Depends(authenticate)):
                 result["inventory"][key] = {
                     "total": len(entries) if isinstance(entries, list) else None,
                     "label": label,
-                    "root_folders": [{"path": str(x.get("path", ""))[:1024], "accessible": x.get("accessible")} for x in roots[:100] if isinstance(x, dict)] if isinstance(roots, list) else [],
+                    "root_folders": [{"path": str(x.get("path", ""))[:1024], "linkmanager_path": _map_service_path(service, str(x.get("path", ""))), "accessible": x.get("accessible")} for x in roots[:100] if isinstance(x, dict)] if isinstance(roots, list) else [],
                 }
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
                 result["inventory"][key] = {"error": "Connecté, mais inventaire indisponible"}
