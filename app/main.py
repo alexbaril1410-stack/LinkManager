@@ -247,7 +247,7 @@ def _path_map(service: str) -> list[dict]:
                 continue
             remote = item.get("remote")
             local = item.get("local")
-            if isinstance(remote, str) and isinstance(local, str) and remote.startswith("/") and local.startswith("/") and "\\x00" not in remote + local:
+            if isinstance(remote, str) and isinstance(local, str) and remote.startswith("/") and local.startswith("/") and chr(0) not in remote + local:
                 valid.append({"remote": remote.rstrip("/") or "/", "local": local.rstrip("/") or "/"})
         return sorted(valid, key=lambda item: len(item["remote"]), reverse=True)
     except (json.JSONDecodeError, TypeError):
