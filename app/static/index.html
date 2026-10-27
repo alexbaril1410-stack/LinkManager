@@ -57,6 +57,6 @@ async function loadIntegrations(){const target=$("integrationStatus"),details=$(
 $("inspect").onclick=async()=>{if(!selected)return;try{let d=await api("/api/info?path="+encodeURIComponent(selected.path));status(`${d.path} — inode ${d.inode}, ${d.nlink} hardlink(s), périphérique ${d.device}.`)}catch(e){status(e.message,true)}};
 $("create").onclick=async()=>{if(!selected)return;let dir=$("dest").value.trim()||"/";let name=$("destname").value.trim()||selected.name;let msg=`Créer un hardlink ?\n\nSource : ${selected.path}\nDestination : ${dir.replace(/\/$/,"")}/${name}\n\nLa destination doit être sur le même système de fichiers. Aucun fichier existant ne sera écrasé.`;if(!confirm(msg))return;
 try{let d=await api("/api/hardlink",{method:"POST",body:JSON.stringify({source:selected.path,destination_directory:dir,destination_name:$("destname").value.trim()||null,confirm:true})});status(`Hardlink créé : ${d.destination}`);$("destname").value="";load(currentPath)}catch(e){status(e.message,true)}};
-(async()=>{try{await api("/api/health");$("health").textContent="Connecté";load("/");loadIntegrations()}catch(e){$("health").textContent="Authentification / erreur";status(e.message,true)}})();
+(async()=>{try{await api("/api/health");$("health").textContent="Connecté";load("/")}catch(e){$("health").textContent="Authentification / erreur";status(e.message,true)}})();
 </script>
 </body></html>
