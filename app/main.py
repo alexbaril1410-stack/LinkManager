@@ -2,6 +2,11 @@ import hmac
 import logging
 import os
 import secrets
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+import http.cookiejar
 from pathlib import Path
 from typing import Optional
 
@@ -195,6 +200,165 @@ def create_hardlink(payload: LinkRequest, user: str = Depends(authenticate)):
     except OSError as exc:
         logger.warning("Hardlink failed user=%s source=%s destination=%s error=%s", user, source, destination, exc)
         raise HTTPException(status_code=400, detail=f"Création impossible : {exc}")
+
+
+# Read-only integrations. Credentials are read only from server-side environment variables.
+def _integration_config(service: str) -> dict:
+    prefix = service.upper()
+    return {
+        "url": os.getenv(f"{prefix}_URL", "").strip().rstrip("/"),
+        "api_key": os.getenv(f"{prefix}_API_KEY", "").strip(),
+        "username": os.getenv(f"{prefix}_USERNAME", "").strip(),
+        "password": os.getenv(f"{prefix}_PASSWORD", ""),
+    }
+
+
+def _safe_base_url(value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("URL invalide : utiliser une URL HTTP(S) sans identifiants intégrés")
+    return value.rstrip("/")
+
+
+def _json_request(url: str, headers: dict | None = None, opener=None, data: bytes | None = None):
+    request = urllib.request.Request(url, headers=headers or {}, data=data, method="POST" if data is not None else "GET")
+    client = opener or urllib.request.build_opener()
+    with client.open(request, timeout=5) as response:
+        body = response.read(2_000_000)
+        if len(body) >= 2_000_000:
+            raise ValueError("Réponse trop volumineuse")
+        content_type = response.headers.get("Content-Type", "")
+        if "json" in content_type.lower():
+            return json.loads(body.decode("utf-8")), response.status
+        return body.decode("utf-8", errors="replace").strip(), response.status
+
+
+def _api_status(service: str) -> dict:
+    cfg = _integration_config(service)
+    if not cfg["url"]:
+        return {"configured": False, "connected": False, "message": "URL non configurée"}
+    try:
+        base = _safe_base_url(cfg["url"])
+        headers = {"Accept": "application/json", "User-Agent": "LinkManager/1.0"}
+        if service in ("RADARR", "SONARR"):
+            if not cfg["api_key"]:
+                return {"configured": True, "connected": False, "message": "Clé API manquante"}
+            headers["X-Api-Key"] = cfg["api_key"]
+            versions = ["v3", "v5"] if service == "SONARR" else ["v3"]
+            last_error = None
+            for version in versions:
+                try:
+                    data, _ = _json_request(f"{base}/api/{version}/system/status", headers=headers)
+                    if not isinstance(data, dict):
+                        raise ValueError("Réponse inattendue de l'API")
+                    return {"configured": True, "connected": True, "version": data.get("version"), "app": data.get("appName", service.title()), "api": version}
+                except urllib.error.HTTPError as exc:
+                    last_error = exc
+                    if exc.code == 401 or exc.code == 403:
+                        return {"configured": True, "connected": False, "message": "Authentification refusée (clé API ou accès réseau)"}
+                    if exc.code != 404:
+                        break
+            if last_error:
+                raise last_error
+        elif service == "QBITTORRENT":
+            if not cfg["username"] or not cfg["password"]:
+                return {"configured": True, "connected": False, "message": "Identifiants WebUI manquants"}
+            jar = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            login_data = urllib.parse.urlencode({"username": cfg["username"], "password": cfg["password"]}).encode()
+            _, _ = _json_request(f"{base}/api/v2/auth/login", headers={"User-Agent": "LinkManager/1.0", "Referer": base + "/"}, opener=opener, data=login_data)
+            version, _ = _json_request(f"{base}/api/v2/app/version", headers=headers, opener=opener)
+            if not isinstance(version, str) or version.lower() == "fails.":
+                raise ValueError("Authentification qBittorrent refusée")
+            return {"configured": True, "connected": True, "version": version, "app": "qBittorrent"}
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            message = "Authentification refusée (vérifier les identifiants ou la clé API)"
+        else:
+            message = f"Erreur HTTP {exc.code}"
+        return {"configured": True, "connected": False, "message": message}
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Integration check failed service=%s error=%s", service, type(exc).__name__)
+        return {"configured": True, "connected": False, "message": "Connexion impossible ou réponse invalide"}
+    return {"configured": True, "connected": False, "message": "API non disponible"}
+
+
+def _get_arr_data(service: str, endpoint: str):
+    cfg = _integration_config(service)
+    base = _safe_base_url(cfg["url"])
+    headers = {"Accept": "application/json", "X-Api-Key": cfg["api_key"], "User-Agent": "LinkManager/1.0"}
+    candidates = [f"{base}/api/v3/{endpoint}"]
+    if service == "SONARR":
+        candidates.append(f"{base}/api/v5/{endpoint}")
+    last_error = None
+    for url in candidates:
+        try:
+            return _json_request(url, headers=headers)[0]
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code != 404:
+                raise
+    if last_error:
+        raise last_error
+    return []
+
+
+@app.get("/api/integrations")
+def integrations(user: str = Depends(authenticate)):
+    """Return read-only connection diagnostics and a small inventory from configured services."""
+    result = {
+        "qBittorrent": _api_status("QBITTORRENT"),
+        "Radarr": _api_status("RADARR"),
+        "Sonarr": _api_status("SONARR"),
+        "read_only": True,
+        "inventory": {},
+        "warnings": [
+            "Les chemins retournés par les applications sont leurs chemins Docker, pas nécessairement les chemins /media.",
+            "Aucune action n'est envoyée à qBittorrent, Radarr ou Sonarr."
+        ],
+    }
+    if result["qBittorrent"].get("connected"):
+        try:
+            cfg = _integration_config("QBITTORRENT")
+            base = _safe_base_url(cfg["url"])
+            jar = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            login_data = urllib.parse.urlencode({"username": cfg["username"], "password": cfg["password"]}).encode()
+            _json_request(f"{base}/api/v2/auth/login", headers={"User-Agent": "LinkManager/1.0", "Referer": base + "/"}, opener=opener, data=login_data)
+            torrents, _ = _json_request(f"{base}/api/v2/torrents/info", headers={"Accept": "application/json", "User-Agent": "LinkManager/1.0"}, opener=opener)
+            if isinstance(torrents, list):
+                result["inventory"]["qBittorrent"] = {
+                    "total": len(torrents),
+                    "items": [{
+                        "name": str(t.get("name", ""))[:240],
+                        "state": str(t.get("state", ""))[:80],
+                        "save_path": str(t.get("save_path", ""))[:1024],
+                        "content_path": str(t.get("content_path", ""))[:1024],
+                        "size": t.get("size") if isinstance(t.get("size"), (int, float)) else None,
+                        "progress": t.get("progress") if isinstance(t.get("progress"), (int, float)) else None,
+                    } for t in torrents[:30]],
+                    "truncated": len(torrents) > 30,
+                }
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            result["inventory"]["qBittorrent"] = {"error": "Impossible de lire la liste des torrents"}
+    for service, key in (("RADARR", "Radarr"), ("SONARR", "Sonarr")):
+        if result[key].get("connected"):
+            try:
+                roots = _get_arr_data(service, "rootfolder")
+                if service == "RADARR":
+                    entries = _get_arr_data(service, "movie")
+                    label = "films"
+                else:
+                    entries = _get_arr_data(service, "series")
+                    label = "séries"
+                result["inventory"][key] = {
+                    "total": len(entries) if isinstance(entries, list) else None,
+                    "label": label,
+                    "root_folders": [{"path": str(x.get("path", ""))[:1024], "accessible": x.get("accessible")} for x in roots[:100] if isinstance(x, dict)] if isinstance(roots, list) else [],
+                }
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+                result["inventory"][key] = {"error": "Connecté, mais inventaire indisponible"}
+    return result
 
 
 @app.get("/api/search")
