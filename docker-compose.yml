@@ -14,6 +14,15 @@ services:
       ALLOW_LINK_CREATION: "true"
       MAX_LIST_ITEMS: "1000"
       LOG_LEVEL: "INFO"
+      # Intégrations facultatives : renseigner les URL accessibles depuis le conteneur LinkManager.
+      # Les identifiants restent côté serveur et ne sont jamais envoyés au navigateur.
+      QBITTORRENT_URL: ""
+      QBITTORRENT_USERNAME: ""
+      QBITTORRENT_PASSWORD: ""
+      RADARR_URL: ""
+      RADARR_API_KEY: ""
+      SONARR_URL: ""
+      SONARR_API_KEY: ""
     volumes:
       # Remplacer par le chemin hôte commun des médias et téléchargements.
       - type: bind
