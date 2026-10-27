@@ -23,6 +23,11 @@ services:
       RADARR_API_KEY: ""
       SONARR_URL: ""
       SONARR_API_KEY: ""
+      # Correspondance chemin-conteneur -> chemin visible par LinkManager (/media est la racine).
+      # Adapter ces chemins si les montages Docker de tes applications changent.
+      QBITTORRENT_PATH_MAP: '[{"remote":"/data/Téléchargements/temp","local":"/HDD500/Téléchargements"},{"remote":"/data/Téléchargements","local":"/SSD2TO/Téléchargements"},{"remote":"/data/Seedb","local":"/HDD500/Téléchargements"},{"remote":"/data/Seed","local":"/HDD1TO"},{"remote":"/Seedc","local":"/RAID480"},{"remote":"/Seedd","local":"/SSD 240GB"},{"remote":"/data/Films","local":"/SSD2TO/Films"},{"remote":"/data/Séries","local":"/SSD2TO/Séries"},{"remote":"/data/Audiobooks","local":"/SSD2TO/Audiobooks"}]'
+      RADARR_PATH_MAP: '[{"remote":"/seedb","local":"/HDD500"},{"remote":"/Seedc","local":"/RAID480"},{"remote":"/Seedd","local":"/SSD 240GB"},{"remote":"/seed","local":"/HDD1TO"},{"remote":"/data","local":"/SSD2TO"}]'
+      SONARR_PATH_MAP: '[{"remote":"/seedb","local":"/HDD500"},{"remote":"/Seedc","local":"/RAID480"},{"remote":"/Seedd","local":"/SSD 240GB"},{"remote":"/seed","local":"/HDD1TO"},{"remote":"/data","local":"/SSD2TO"}]'
     volumes:
       # Remplacer par le chemin hôte commun des médias et téléchargements.
       - type: bind
