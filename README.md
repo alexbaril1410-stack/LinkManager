@@ -38,3 +38,8 @@ Consulte [INTEGRATIONS.md](INTEGRATIONS.md) pour la configuration détaillée. T
 Le bouton **Analyser les médias** compare les fichiers torrent aux fichiers Radarr/Sonarr et à leurs chemins locaux, confirme les hardlinks par inode/périphérique et compare par SHA-256 un nombre limité de candidats. Les éléments sans correspondance sont des pistes de vérification, jamais une preuve suffisante pour supprimer.
 
 L'inventaire qBittorrent est paginé par lots de 500 pour prendre en charge les grosses bibliothèques de cross-seed (jusqu'à 50 000 torrents et 50 000 fichiers par analyse, avec indicateur si la limite est atteinte). Les actions de suppression ou de modification sont lancées manuellement et nécessitent de saisir `SUPPRIMER`. Le retrait d'un élément Radarr/Sonarr conserve ses fichiers ; la suppression des fichiers du torrent est une option séparée. Les dossiers ne peuvent être supprimés par l'outil que s'ils sont vides.
+
+
+## Cache persistant des inventaires
+
+Le diagnostic utilise une base SQLite située dans `/app/data/linkmanager.sqlite3`, conservée dans le volume Docker nommé `linkmanager_data`. Les listes qBittorrent/Radarr/Sonarr sont réutilisées pendant 300 secondes par défaut. La liste des fichiers de chaque torrent est conservée par hash du torrent, car son contenu est immuable pour un hash donné ; seules les métadonnées locales (existence, inode, hardlinks) sont relues pendant l’analyse. Les actions sensibles continuent de vérifier les références en direct et n’utilisent pas ce cache pour autoriser une suppression. Le cache est configurable avec `INVENTORY_CACHE_TTL_SECONDS` et `LINKMANAGER_DB_PATH` dans `docker-compose.yml`.
