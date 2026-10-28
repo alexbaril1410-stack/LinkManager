@@ -956,6 +956,12 @@ def audit(user: str = Depends(authenticate)):
         for peer in candidates:
             if not torrent_file["exists"] or not peer["exists"]:
                 continue
+            # A shared local path is already the same file reference, not a
+            # separate copy that could benefit from a hardlink. Exclude it
+            # before hashing, even if metadata was collected at different times.
+            if (torrent_file.get("local_path") and peer.get("local_path")
+                    and torrent_file["local_path"] == peer["local_path"]):
+                continue
             if torrent_file["device"] == peer["device"] and torrent_file["inode"] == peer["inode"]:
                 continue
             pair_checks += 1
