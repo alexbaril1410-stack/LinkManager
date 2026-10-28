@@ -810,7 +810,7 @@ def audit(user: str = Depends(authenticate)):
         "warnings": [
             "Un fichier sans correspondance n'est pas nécessairement orphelin : un torrent peut être en seed sans bibliothèque, et une bibliothèque peut rester après suppression du torrent.",
             "Les candidats fondés seulement sur le nom et la taille ne sont pas des correspondances confirmées.",
-            "Le diagnostic est borné : maximum 200 torrents, 5 000 fichiers et 4 Gio de lecture SHA-256 par analyse.",
+            "Le diagnostic parcourt les torrents par pages jusqu'à 50 000 entrées et analyse jusqu'à 50 000 fichiers ; la lecture SHA-256 reste limitée à 4 Gio par analyse.",
             "Aucune donnée n'a été modifiée. Toutes les actions destructives exigent une confirmation explicite."
         ],
         "truncated": {"torrents": truncated_torrents, "torrent_files": scanned_torrent_files >= MAX_AUDIT_FILES,
