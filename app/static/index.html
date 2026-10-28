@@ -96,7 +96,7 @@ async function runAudit(){
  try{
   const d=await api("/api/audit");
   const labels=[
-   ["Torrents analysés",d.summary.torrents_scanned],["Fichiers torrent",d.summary.torrent_files_scanned],
+   ["Torrents analysés",d.summary.torrents_scanned],["Fichiers torrent inventoriés",d.summary.torrent_files_scanned],
    ["Fichiers bibliothèque",d.summary.library_files_scanned],["Hardlinks confirmés (chemins distincts)",d.summary.confirmed_hardlink_pairs],
    ["Chemins identiques",d.summary.same_path_matches],["Copies identiques",d.summary.identical_copy_pairs],
    ["Candidats non vérifiés",d.summary.unverified_candidates],
