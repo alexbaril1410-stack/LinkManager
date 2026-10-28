@@ -775,6 +775,39 @@ def _build_audit_inventory():
             continue
         try:
             entries = _cached_arr_inventory(service, endpoint, cache_stats)
+            # Some Radarr/Sonarr versions return an empty list when the file endpoint
+            # is called without its parent ID. Fall back to per-movie/per-series queries
+            # so a connected API does not silently produce a zero-file library audit.
+            if isinstance(entries, list) and not entries:
+                catalog_endpoint = "movie" if service == "RADARR" else "series"
+                catalog = _cached_arr_inventory(service, catalog_endpoint, cache_stats)
+                if isinstance(catalog, list) and catalog:
+                    recovered = []
+                    for catalog_item in catalog:
+                        parent_id = catalog_item.get("id")
+                        if not isinstance(parent_id, int):
+                            continue
+                        if service == "RADARR":
+                            if not catalog_item.get("hasFile", False):
+                                continue
+                            query_endpoint = f"moviefile?movieId={parent_id}"
+                        else:
+                            statistics = catalog_item.get("statistics") or {}
+                            if isinstance(statistics, dict) and statistics.get("episodeFileCount", 0) == 0:
+                                continue
+                            query_endpoint = f"episodefile?seriesId={parent_id}"
+                        try:
+                            parent_files = _cached_arr_inventory(service, query_endpoint, cache_stats)
+                        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError, HTTPException):
+                            logger.warning("Audit per-parent file inventory unavailable service=%s parent_id=%s", service, parent_id)
+                            continue
+                        if isinstance(parent_files, list):
+                            recovered.extend(parent_files)
+                        if len(recovered) >= MAX_AUDIT_FILES:
+                            break
+                    if recovered:
+                        entries = recovered
+                        logger.info("Audit inventory recovered service=%s files=%s using per-parent API", service, len(entries))
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError, HTTPException):
             logger.warning("Audit library inventory unavailable service=%s", service)
             continue
