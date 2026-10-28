@@ -862,11 +862,13 @@ def audit(user: str = Depends(authenticate)):
     # Index by actual filesystem identity first, then by filename and size for bounded content checks.
     identity_index = {}
     candidate_index = {}
+    size_index = {}
     for f in library:
         if f["exists"] and f["device"] is not None and f["inode"] is not None:
             identity_index.setdefault((f["device"], f["inode"]), []).append(f)
         if f["size"] is not None:
             candidate_index.setdefault((f["name"].casefold(), f["size"]), []).append(f)
+            size_index.setdefault(f["size"], []).append(f)
     matched_torrents = set()
     matched_library = set()
     matches = []
@@ -883,7 +885,13 @@ def audit(user: str = Depends(authenticate)):
                 matches.append({"status": "hardlink_confirmed", "torrent": torrent_file, "library": peer})
         if torrent_file["size"] is None:
             continue
-        candidates = candidate_index.get((torrent_file["name"].casefold(), torrent_file["size"]), [])
+        # First look at same-name candidates, then compare other files of the same
+        # size too: Radarr/Sonarr and torrent releases can use different filenames
+        # for byte-identical media. SHA-256 is required before declaring a match.
+        same_name = candidate_index.get((torrent_file["name"].casefold(), torrent_file["size"]), [])
+        candidates = list(same_name)
+        seen_peers = {id(peer) for peer in candidates}
+        candidates.extend(peer for peer in size_index.get(torrent_file["size"], []) if id(peer) not in seen_peers)
         for peer in candidates:
             if not torrent_file["exists"] or not peer["exists"]:
                 continue
@@ -901,11 +909,11 @@ def audit(user: str = Depends(authenticate)):
                 matched_library.add(id(peer))
                 potential_hardlinks.append({"status": "identical_copy_can_be_hardlinked",
                                             "torrent": torrent_file, "library": peer,
-                                            "note": "Contenu identique confirmé par SHA-256 ; les deux chemins doivent être sur le même système de fichiers pour créer un hardlink."})
+                                            "note": "Contenu identique confirmé par SHA-256, même si les noms diffèrent ; les deux chemins doivent être sur le même système de fichiers pour créer un hardlink."})
             elif left_hash and right_hash:
-                # Same name and size but different content: not a candidate.
+                # Different content: same size alone is not enough to claim a match.
                 continue
-            else:
+            elif id(peer) in seen_peers:
                 potential_hardlinks.append({"status": "unverified_name_size_candidate",
                                             "torrent": torrent_file, "library": peer,
                                             "note": "Même nom et même taille, mais comparaison de contenu non réalisée (limite de diagnostic)."})
