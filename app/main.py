@@ -416,6 +416,17 @@ MAX_AUDIT_HASH_FILE_BYTES = 1024 * 1024 * 1024
 MAX_AUDIT_HASH_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_AUDIT_HASH_PAIRS = 80
 
+# Ignore release sidecars in the main audit; keep books and audiobooks in scope.
+AUDIT_IGNORED_SIDECAR_EXTENSIONS = {
+    ".nfo", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+    ".avif", ".sfv", ".url", ".lnk", ".ds_store", ".par2"
+}
+
+
+def _audit_is_ignored_sidecar(record: dict) -> bool:
+    return Path(str(record.get("name", ""))).suffix.casefold() in AUDIT_IGNORED_SIDECAR_EXTENSIONS
+
+
 # Persistent inventory cache. The database lives on a dedicated Docker volume.
 CACHE_DB_PATH = os.getenv("LINKMANAGER_DB_PATH", "/app/data/linkmanager.sqlite3")
 INVENTORY_CACHE_TTL_SECONDS = max(30, int(os.getenv("INVENTORY_CACHE_TTL_SECONDS", "300")))
@@ -915,13 +926,24 @@ def audit(user: str = Depends(authenticate)):
     hash_cache = {}
     hash_budget = {"bytes": 0, "files": 0}
     pair_checks = 0
+    ignored_sidecar_count = sum(1 for f in torrent_files if _audit_is_ignored_sidecar(f))
+    audited_torrent_indices = {i for i, f in enumerate(torrent_files) if not _audit_is_ignored_sidecar(f)}
     for index, torrent_file in enumerate(torrent_files):
+        # Sidecars such as NFOs and artwork are intentionally outside the main
+        # audit. Books and audiobooks (EPUB, PDF, M4B, etc.) remain included.
+        if index not in audited_torrent_indices:
+            continue
         if torrent_file["exists"]:
             peers = identity_index.get((torrent_file["device"], torrent_file["inode"]), [])
             for peer in peers:
                 matched_torrents.add(index)
                 matched_library.add(id(peer))
-                matches.append({"status": "hardlink_confirmed", "torrent": torrent_file, "library": peer})
+                same_path = bool(torrent_file.get("local_path") and peer.get("local_path")
+                                  and torrent_file["local_path"] == peer["local_path"])
+                matches.append({"status": "same_path_match" if same_path else "hardlink_confirmed",
+                                "torrent": torrent_file, "library": peer,
+                                "note": "Même chemin local : correspondance valide, mais ce n'est pas un hardlink distinct."
+                                if same_path else "Chemins distincts partageant le même inode et le même périphérique."})
         if torrent_file["size"] is None:
             continue
         # First look at same-name candidates, then compare other files of the same
@@ -958,22 +980,51 @@ def audit(user: str = Depends(authenticate)):
                                             "note": "Même nom et même taille, mais comparaison de contenu non réalisée (limite de diagnostic)."})
     for item in matches:
         item["key"] = (item["torrent"]["torrent_hash"], item["torrent"]["remote_path"], item["library"]["service"], item["library"]["file_id"])
-    hardlink_count = sum(1 for m in matches if m["status"] == "hardlink_confirmed")
-    identical_count = sum(1 for m in potential_hardlinks if m["status"] == "identical_copy_can_be_hardlinked")
+    # Deduplicate repeated API associations while preserving distinct torrent hashes
+    # (cross-seed entries) in the detail view.
+    def _association_key(item):
+        t, lib = item["torrent"], item["library"]
+        return (item["status"], t.get("torrent_hash"), t.get("local_path"),
+                lib.get("service"), lib.get("file_id"), lib.get("local_path"))
+    matches = list({_association_key(item): item for item in matches}.values())
+    potential_hardlinks = list({_association_key(item): item for item in potential_hardlinks}.values())
+
+    # Count unique local path pairs, not torrent associations.
+    hardlink_count = len({
+        (m["torrent"].get("local_path"), m["library"].get("local_path"),
+         m["torrent"].get("device"), m["torrent"].get("inode"))
+        for m in matches if m["status"] == "hardlink_confirmed"
+    })
+    same_path_count = len({
+        (m["torrent"].get("local_path"), m["library"].get("local_path"))
+        for m in matches if m["status"] == "same_path_match"
+    })
+    identical_count = len({
+        (m["torrent"].get("local_path"), m["library"].get("local_path"))
+        for m in potential_hardlinks if m["status"] == "identical_copy_can_be_hardlinked"
+    })
     return {
         "read_only": True,
         "cache": cache_stats,
         "summary": {
             "torrents_scanned": len(torrents), "torrent_files_scanned": scanned_torrent_files,
             "library_files_scanned": len(library), "confirmed_hardlink_pairs": hardlink_count,
-            "identical_copy_pairs": identical_count, "unverified_candidates": sum(1 for m in potential_hardlinks if m["status"] == "unverified_name_size_candidate"),
-            "torrent_files_without_library_match": sum(1 for i, f in enumerate(torrent_files) if i not in matched_torrents),
+            "same_path_matches": same_path_count,
+            "identical_copy_pairs": identical_count,
+            "unverified_candidates": len({
+                (m["torrent"].get("local_path"), m["library"].get("local_path"))
+                for m in potential_hardlinks if m["status"] == "unverified_name_size_candidate"
+            }),
+            "torrent_files_without_library_match": sum(1 for i in audited_torrent_indices if i not in matched_torrents),
             "library_files_without_torrent_match": sum(1 for f in library if id(f) not in matched_library),
+            "torrent_files_included_in_audit": len(audited_torrent_indices),
+            "ignored_sidecar_files": ignored_sidecar_count,
             "hash_bytes_read": hash_budget["bytes"], "hash_files_read": hash_budget["files"],
         },
         "matches": matches[:1000],
         "potential_hardlinks": potential_hardlinks[:500],
-        "torrent_only": [f for i, f in enumerate(torrent_files) if i not in matched_torrents][:500],
+        "torrent_only": [f for i, f in enumerate(torrent_files)
+                         if i in audited_torrent_indices and i not in matched_torrents][:500],
         "library_only": [f for f in library if id(f) not in matched_library][:500],
         "torrents": [{"hash": t["hash"], "name": t["name"], "state": t["state"], "size": t["size"],
                       "files_count": len(t["files"]), "unmapped_files": sum(1 for f in t["files"] if not f["mapped"])}
@@ -983,6 +1034,9 @@ def audit(user: str = Depends(authenticate)):
                            "local_path": f["local_path"], "exists": f["exists"], "mapped": f["mapped"],
                            "size": f["size"], "nlink": f["nlink"]} for f in library],
         "warnings": [
+            "Les fichiers annexes (NFO, images et fichiers techniques de release) sont exclus des compteurs principaux ; les livres et livres audio restent inclus.",
+            "Les associations cross-seed peuvent référencer le même fichier physique ; les compteurs de hardlinks et de copies sont dédupliqués par paire de chemins.",
+            "Un chemin identique côté torrent et bibliothèque est compté séparément et n'est pas présenté comme un hardlink.",
             "Un fichier sans correspondance n'est pas nécessairement orphelin : un torrent peut être en seed sans bibliothèque, et une bibliothèque peut rester après suppression du torrent.",
             "Les candidats fondés seulement sur le nom et la taille ne sont pas des correspondances confirmées.",
             "Le diagnostic parcourt les torrents par pages jusqu'à 50 000 entrées et analyse jusqu'à 50 000 fichiers ; la lecture SHA-256 reste limitée à 4 Gio par analyse.",
