@@ -63,3 +63,8 @@ Chaque action demande la saisie exacte de `SUPPRIMER`. Les routes disponibles so
 - `POST /api/actions/remove-empty-folder` : retire uniquement un dossier vide ; le système de fichiers refuse l'opération si le dossier contient encore quelque chose.
 
 Les actions sont manuelles et sont consignées dans les journaux. Les secrets d'API restent côté serveur. Vérifie toujours l'élément et les chemins affichés avant de confirmer.
+
+
+## 6. Cache persistant et redémarrages
+
+Le diagnostic utilise SQLite dans `/app/data/linkmanager.sqlite3`, stockée dans le volume Docker nommé `linkmanager_data`. Après un redémarrage du conteneur, LinkManager peut réutiliser les inventaires encore valides au lieu de relire tous les torrents et leurs fichiers. Les listes générales ont un TTL de 300 secondes par défaut (`INVENTORY_CACHE_TTL_SECONDS`). Les fichiers de torrent sont mis en cache par hash ; les chemins et les métadonnées réelles sous `/media` sont recalculés pendant l'analyse. Le cache ne sert jamais à autoriser une suppression : les vérifications de références effectuées avant une action destructive interrogent les applications en direct. Pour forcer une nouvelle collecte des listes, attendre l'expiration du TTL ou réduire temporairement sa valeur dans `docker-compose.yml`.
