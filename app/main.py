@@ -804,7 +804,7 @@ def unmonitor_item(payload: ArrItemAction, user: str = Depends(authenticate)):
     if not isinstance(item, dict):
         raise HTTPException(status_code=404, detail="Élément introuvable.")
     item["monitored"] = False
-    _arr_request(payload.service, endpoint, "PUT", item)
+    _arr_request(payload.service, f"{endpoint}/{payload.item_id}", "PUT", item)
     logger.warning("MANUAL_ACTION user=%s action=unmonitor service=%s item_id=%s", user, payload.service, payload.item_id)
     return {"status": "unmonitored", "service": payload.service, "item_id": payload.item_id}
 
