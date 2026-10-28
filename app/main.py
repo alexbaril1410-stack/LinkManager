@@ -406,8 +406,9 @@ import hashlib
 import re
 import posixpath
 
-MAX_AUDIT_TORRENTS = 200
-MAX_AUDIT_FILES = 5000
+MAX_AUDIT_TORRENTS = 50000
+QBITTORRENT_PAGE_SIZE = 500
+MAX_AUDIT_FILES = 50000
 MAX_AUDIT_HASH_FILE_BYTES = 1024 * 1024 * 1024
 MAX_AUDIT_HASH_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_AUDIT_HASH_PAIRS = 80
@@ -588,13 +589,29 @@ def _sha256_bounded(path: Path, cache: dict, budget: dict) -> str | None:
         return None
 
 
+
+def _qbit_all_torrents(base: str, opener, max_torrents: int = MAX_AUDIT_TORRENTS):
+    """Fetch the complete qBittorrent inventory in pages, up to a safety ceiling."""
+    all_torrents = []
+    offset = 0
+    while offset < max_torrents:
+        page_size = min(QBITTORRENT_PAGE_SIZE, max_torrents - offset)
+        page = _qbit_json(base, opener, "/api/v2/torrents/info",
+                          {"limit": str(page_size), "offset": str(offset)})
+        if not isinstance(page, list):
+            raise HTTPException(status_code=502, detail="Réponse qBittorrent inattendue pendant la pagination.")
+        all_torrents.extend(page)
+        if len(page) < page_size:
+            return all_torrents, False
+        offset += len(page)
+    # A full final page means there may be more records. Never pretend the inventory is complete.
+    return all_torrents, True
+
+
 def _build_audit_inventory():
     base, opener = _qbit_session()
-    raw_torrents = _qbit_json(base, opener, "/api/v2/torrents/info", {"limit": str(MAX_AUDIT_TORRENTS)})
-    if not isinstance(raw_torrents, list):
-        raise HTTPException(status_code=502, detail="Réponse qBittorrent inattendue.")
+    raw_torrents, truncated_torrents = _qbit_all_torrents(base, opener)
     torrent_records = []
-    truncated_torrents = len(raw_torrents) >= MAX_AUDIT_TORRENTS
     scanned_torrent_files = 0
     for torrent in raw_torrents:
         torrent_hash = str(torrent.get("hash", "")).lower()
@@ -660,11 +677,9 @@ def _qbit_content_references(local_path: Path):
     if not cfg["url"] or not cfg["username"] or not cfg["password"]:
         raise HTTPException(status_code=409, detail="qBittorrent doit être configuré pour vérifier les références avant de supprimer ce fichier.")
     base, opener = _qbit_session()
-    torrents = _qbit_json(base, opener, "/api/v2/torrents/info", {"limit": "500"})
-    if not isinstance(torrents, list):
-        raise HTTPException(status_code=409, detail="Inventaire qBittorrent invalide ; suppression refusée.")
-    if len(torrents) >= 500:
-        raise HTTPException(status_code=409, detail="Plus de 500 torrents : vérification des références incomplète, suppression refusée.")
+    torrents, truncated = _qbit_all_torrents(base, opener)
+    if truncated:
+        raise HTTPException(status_code=409, detail="L'inventaire qBittorrent dépasse la limite de sécurité de 50 000 torrents ; vérification incomplète, suppression refusée.")
     target = local_path.resolve()
     refs = []
     for torrent in torrents:
