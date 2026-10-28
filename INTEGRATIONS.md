@@ -50,7 +50,7 @@ Le bouton **Analyser les médias** appelle `GET /api/audit`. Il rapproche les fi
 - **Contenu identique** : SHA-256 identique ; la création d'un hardlink est envisageable seulement si les fichiers sont sur le même système de fichiers.
 - **Candidat non vérifié** : nom et taille identiques, mais comparaison de contenu non effectuée.
 - **Sans correspondance** : simple signalement à examiner, pas une preuve d'orphelin.
-- Le diagnostic est borné à 200 torrents, 5 000 fichiers et 4 Gio de lecture SHA-256 par analyse.
+- Le diagnostic récupère les torrents par pages de 500, jusqu'à 50 000 entrées, puis analyse jusqu'à 50 000 fichiers. La lecture SHA-256 reste limitée à 4 Gio par analyse. Si la limite de torrents est atteinte, l'inventaire est signalé comme tronqué ; les actions destructives refusent une vérification incomplète.
 
 ### Actions explicitement déclenchées
 
