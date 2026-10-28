@@ -34,19 +34,15 @@ main{max-width:1500px;margin:auto;padding:24px}.stats{display:grid;grid-template
  <div id="auditStatus" class="status">Aucune analyse lancée. Le diagnostic ne modifie aucun fichier ni aucune application.</div>
  <div id="auditSummary" class="audit-grid"></div>
  <div id="auditWarnings" class="muted" style="margin:10px 0"></div>
- <h4>Copies identiques ou candidates à un hardlink</h4>
- <div class="tablewrap"><table><thead><tr><th>Fichier torrent</th><th>Fichier bibliothèque</th><th>Diagnostic</th><th>Action</th></tr></thead><tbody id="auditCandidates"></tbody></table></div>
- <div class="empty" id="auditCandidatesEmpty" hidden>Aucun candidat détecté ou analyse non lancée.</div>
- <h4>Fichiers torrent sans correspondance dans la bibliothèque</h4>
- <div class="tablewrap"><table><thead><tr><th>Fichier</th><th>Torrent</th><th>Chemin local</th><th>État</th></tr></thead><tbody id="auditTorrentOnly"></tbody></table></div>
- <div class="empty" id="auditTorrentOnlyEmpty" hidden>Aucun résultat.</div>
- <h4>Fichiers de bibliothèque sans correspondance torrent</h4>
- <div class="tablewrap"><table><thead><tr><th>Application</th><th>Fichier</th><th>Chemin local</th><th>Action manuelle</th></tr></thead><tbody id="auditLibraryOnly"></tbody></table></div>
- <div class="empty" id="auditLibraryOnlyEmpty" hidden>Aucun résultat.</div>
- <h4>Torrents (actions manuelles)</h4>
- <div class="tablewrap"><table><thead><tr><th>Torrent</th><th>État</th><th>Fichiers analysés</th><th>Actions</th></tr></thead><tbody id="auditTorrents"></tbody></table></div>
- <h4>Films et séries (surveillance / bibliothèque)</h4>
- <div class="tablewrap"><table><thead><tr><th>Application</th><th>Identifiant</th><th>Fichier</th><th>Actions</th></tr></thead><tbody id="auditItems"></tbody></table></div>
+ <h4 id="auditCandidatesTitle" hidden>Doublons potentiels à vérifier</h4>
+ <div class="tablewrap" id="auditCandidatesWrap" hidden><table><thead><tr><th>Fichier torrent</th><th>Fichier bibliothèque</th><th>Pourquoi vérifier</th><th>Action</th></tr></thead><tbody id="auditCandidates"></tbody></table></div>
+ <div class="empty" id="auditCandidatesEmpty" hidden>Aucun doublon potentiel à vérifier.</div>
+ <h4 id="auditTorrentOnlyTitle" hidden>Fichiers torrent réellement problématiques</h4>
+ <div class="tablewrap" id="auditTorrentOnlyWrap" hidden><table><thead><tr><th>Fichier</th><th>Torrent</th><th>Chemin local</th><th>Problème détecté</th></tr></thead><tbody id="auditTorrentOnly"></tbody></table></div>
+ <div class="empty" id="auditTorrentOnlyEmpty" hidden>Aucun fichier torrent nécessitant une vérification.</div>
+ <h4 id="auditLibraryOnlyTitle" hidden>Fichiers bibliothèque à vérifier</h4>
+ <div class="tablewrap" id="auditLibraryOnlyWrap" hidden><table><thead><tr><th>Application</th><th>Fichier</th><th>Chemin local</th><th>Problème détecté</th></tr></thead><tbody id="auditLibraryOnly"></tbody></table></div>
+ <div class="empty" id="auditLibraryOnlyEmpty" hidden>Aucun fichier bibliothèque nécessitant une vérification.</div>
  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px">
   <label for="emptyFolderPath">Dossier local à retirer uniquement s'il est vide :</label>
   <input id="emptyFolderPath" placeholder="/SSD2TO/Films/Dossier" style="padding:9px;border:1px solid var(--line);border-radius:8px;background:#101520;color:var(--text);min-width:220px;flex:1">
@@ -97,30 +93,31 @@ async function runAudit(){
   const d=await api("/api/audit");
   const labels=[
    ["Torrents analysés",d.summary.torrents_scanned],["Fichiers torrent inventoriés",d.summary.torrent_files_scanned],
-   ["Fichiers bibliothèque",d.summary.library_files_scanned],["Hardlinks confirmés (chemins distincts)",d.summary.confirmed_hardlink_pairs],
-   ["Chemins identiques",d.summary.same_path_matches],["Copies identiques",d.summary.identical_copy_pairs],
-   ["Candidats non vérifiés",d.summary.unverified_candidates],
-   ["Fichiers torrent utiles analysés",d.summary.torrent_files_included_in_audit],
-   ["Fichiers annexes ignorés",d.summary.ignored_sidecar_files],
-   ["Torrent utile sans correspondance",d.summary.torrent_files_without_library_match],["Bibliothèque sans torrent",d.summary.library_files_without_torrent_match]
+   ["Fichiers bibliothèque inventoriés",d.summary.library_files_scanned],
+   ["Fichiers torrent nécessitant une vérification",d.summary.torrent_files_without_library_match],
+   ["Fichiers bibliothèque sans torrent associé",d.summary.library_files_without_torrent_match]
   ];
   $("auditSummary").innerHTML=labels.map(([label,value])=>'<div class="audit-stat"><span class="muted">'+esc(label)+'</span><b>'+esc(value??"—")+'</b></div>').join("");
-  $("auditWarnings").textContent=(d.warnings||[]).join(" ");
-  const candidates=[...(d.matches||[]).filter(x=>x.status==="hardlink_confirmed"||x.status==="same_path_match"),...(d.potential_hardlinks||[])];
+  $("auditWarnings").textContent=(d.warnings||[]).filter(Boolean).join(" ");
+  const candidates=(d.potential_hardlinks||[]).filter(x=>x.status!=="hardlink_confirmed"&&x.status!=="same_path_match");
   $("auditCandidates").innerHTML=candidates.slice(0,200).map(x=>{
    const t=x.torrent||{},l=x.library||{};
-   const label=x.status==="hardlink_confirmed"?"Hardlink confirmé":x.status==="same_path_match"?"Même chemin (pas un hardlink)":x.status==="identical_copy_can_be_hardlinked"?"Contenu identique (SHA-256)":"Candidat non vérifié";
-   return '<tr><td>'+esc(t.name||t.remote_path||"—")+'<div class="sub">'+esc(t.local_path||"chemin non associé")+'</div><div class="sub">Torrent : '+esc(t.torrent_hash||"—")+'</div></td><td>'+esc(l.name||l.remote_path||"—")+'<div class="sub">'+esc((l.service||"")+" · "+(l.local_path||"chemin non associé"))+'</div></td><td>'+esc(label)+'<div class="sub">'+esc(x.note||(x.status==="hardlink_confirmed"?"Chemins distincts, même inode et même périphérique.":"Correspondance détectée."))+'</div></td><td>'+(x.status!=="same_path_match"&&l.service&&l.file_id!=null&&l.mapped&&l.exists?'<button data-action="remove-library-file" data-service="'+esc(l.service)+'" data-file-id="'+esc(l.file_id)+'">Retirer fichier bibliothèque…</button>':x.status==="same_path_match"?'Aucune action : même fichier physique':'—')+'</td></tr>';
+   const label=x.status==="identical_copy_can_be_hardlinked"?"Contenu identique (SHA-256)":"Candidat non vérifié";
+   return '<tr><td>'+esc(t.name||t.remote_path||"—")+'<div class="sub">'+esc(t.local_path||"chemin non associé")+'</div></td><td>'+esc(l.name||l.remote_path||"—")+'<div class="sub">'+esc((l.service||"")+" · "+(l.local_path||"chemin non associé"))+'</div></td><td>'+esc(label)+'<div class="sub">'+esc(x.note||"Les éléments semblent correspondre, mais ce n'est pas confirmé.")+'</div></td><td>'+(l.service&&l.file_id!=null&&l.mapped&&l.exists?'<button data-action="remove-library-file" data-service="'+esc(l.service)+'" data-file-id="'+esc(l.file_id)+'">Retirer fichier bibliothèque…</button>':'—')+'</td></tr>';
   }).join("");
-  $("auditCandidatesEmpty").hidden=candidates.length>0;
-  $("auditTorrentOnly").innerHTML=(d.torrent_only||[]).slice(0,200).map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+esc(f.torrent_name)+'<div class="sub">'+esc(f.torrent_hash)+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Non associé</span>':!f.exists?'<span class="pill no">Absent du disque</span>':'À vérifier')+'</td></tr>').join("");
-  $("auditTorrentOnlyEmpty").hidden=(d.torrent_only||[]).length>0;
-  $("auditLibraryOnly").innerHTML=(d.library_only||[]).slice(0,200).map(f=>'<tr><td>'+esc(f.service)+'</td><td>'+esc(f.name)+'<div class="sub">ID fichier '+esc(f.file_id??"—")+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'<div class="sub">'+(f.exists?"Présent":"Absent / non vérifiable")+'</div></td><td><button data-action="remove-library-file" data-service="'+esc(f.service)+'" data-file-id="'+esc(f.file_id)+'" '+(!f.mapped||!f.exists?"disabled":"")+'>Supprimer le fichier…</button></td></tr>').join("");
-  $("auditLibraryOnlyEmpty").hidden=(d.library_only||[]).length>0;
-  $("auditTorrents").innerHTML=(d.torrents||[]).map(t=>'<tr><td>'+esc(t.name)+'<div class="sub">'+esc(t.hash)+'</div></td><td>'+esc(t.state)+'</td><td>'+esc(t.files_count)+' · '+(t.unmapped_files?'<span class="pill no">'+esc(t.unmapped_files)+' non associé(s)</span>':'chemins associés')+'</td><td><div class="actions"><button data-action="remove-torrent" data-hash="'+esc(t.hash)+'" data-delete-files="false">Retirer le torrent (garder les fichiers)…</button><button data-action="remove-torrent" data-hash="'+esc(t.hash)+'" data-delete-files="true" '+(t.unmapped_files?"disabled":"")+'>Retirer torrent + fichiers…</button></div></td></tr>').join("");
-  const uniqueItems=new Map();
-  for(const f of d.library_items||[]){if(f.item_id!=null)uniqueItems.set(f.service+":"+f.item_id,{...f});}
-  $("auditItems").innerHTML=Array.from(uniqueItems.values()).map(f=>'<tr><td>'+esc(f.service)+'</td><td>'+esc(f.item_id)+'</td><td>'+esc(f.name||"—")+'<div class="sub">'+esc(f.remote_path||"")+'</div></td><td><div class="actions"><button data-action="unmonitor" data-service="'+esc(f.service)+'" data-item-id="'+esc(f.item_id)+'">Désactiver la surveillance…</button><button data-action="remove-library-item" data-service="'+esc(f.service)+'" data-item-id="'+esc(f.item_id)+'">Retirer de la bibliothèque…</button></div></td></tr>').join("");
+  const torrentIssues=(d.torrent_only||[]).filter(f=>!f.mapped||!f.exists);
+  $("auditTorrentOnly").innerHTML=torrentIssues.slice(0,200).map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+esc(f.torrent_name)+'<div class="sub">'+esc(f.torrent_hash)+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Chemin non associé au stockage</span>':'<span class="pill no">Fichier absent du disque</span>')+'</td></tr>').join("");
+  const libraryIssues=(d.library_only||[]).filter(f=>!f.mapped||!f.exists);
+  $("auditLibraryOnly").innerHTML=libraryIssues.slice(0,200).map(f=>'<tr><td>'+esc(f.service)+'</td><td>'+esc(f.name)+'<div class="sub">ID fichier '+esc(f.file_id??"—")+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Chemin non associé au stockage</span>':'<span class="pill no">Fichier absent du disque</span>')+'</td></tr>').join("");
+  $("auditCandidatesTitle").hidden=candidates.length===0;
+  $("auditCandidatesWrap").hidden=candidates.length===0;
+  $("auditCandidatesEmpty").hidden=candidates.length!==0;
+  $("auditTorrentOnlyTitle").hidden=torrentIssues.length===0;
+  $("auditTorrentOnlyWrap").hidden=torrentIssues.length===0;
+  $("auditTorrentOnlyEmpty").hidden=torrentIssues.length!==0;
+  $("auditLibraryOnlyTitle").hidden=libraryIssues.length===0;
+  $("auditLibraryOnlyWrap").hidden=libraryIssues.length===0;
+  $("auditLibraryOnlyEmpty").hidden=libraryIssues.length!==0;
   const cache=d.cache||{};const cacheLabel=cache.torrent_list_source==="cache" ? "Inventaire torrents réutilisé depuis SQLite ("+(cache.torrent_list_age_seconds||0)+" s ; "+(cache.torrent_file_cache_hits||0)+" listes de fichiers en cache, "+(cache.torrent_file_cache_misses||0)+" récupérées). " : "Inventaire torrents actualisé ; "+(cache.torrent_file_cache_hits||0)+" listes de fichiers en cache, "+(cache.torrent_file_cache_misses||0)+" récupérées. ";statusEl.textContent="Diagnostic terminé en lecture seule. "+cacheLabel+(d.truncated?.torrents||d.truncated?.torrent_files||d.truncated?.hash_comparison?"Attention : certaines limites de scan ont été atteintes. ":"")+"Aucune donnée n'a été modifiée.";
  }catch(e){statusEl.textContent="Échec du diagnostic : "+e.message;}
  finally{$("runAudit").disabled=false;}
