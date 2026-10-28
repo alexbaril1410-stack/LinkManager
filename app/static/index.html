@@ -106,7 +106,27 @@ async function runAudit(){
    return '<tr><td>'+esc(t.name||t.remote_path||"—")+'<div class="sub">'+esc(t.local_path||"chemin non associé")+'</div></td><td>'+esc(l.name||l.remote_path||"—")+'<div class="sub">'+esc((l.service||"")+" · "+(l.local_path||"chemin non associé"))+'</div></td><td>'+esc(label)+'<div class="sub">'+esc(x.note||"Les éléments semblent correspondre, mais ce n'est pas confirmé.")+'</div></td><td>À examiner manuellement</td></tr>';
   }).join("");
   const torrentIssues=(d.torrent_only||[]);
-  $("auditTorrentOnly").innerHTML=torrentIssues.slice(0,200).map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+esc(f.torrent_name)+'<div class="sub">'+esc(f.torrent_hash)+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Chemin de stockage non reconnu</span>':!f.exists?'<span class="pill no">Fichier absent du disque</span>':'Sans correspondance dans Radarr/Sonarr : vérifier si ce fichier doit être dans la bibliothèque.')+'</td></tr>').join("");
+  const chapterGroups=new Map(), displayTorrentIssues=[];
+  torrentIssues.forEach(f=>{
+   if(f.book_chapter_track){
+    const path=String(f.local_path||f.remote_path||"");
+    const parent=path.includes("/")?path.slice(0,path.lastIndexOf("/")):"";
+    const key=String(f.torrent_hash||"")+"|"+parent;
+    if(!chapterGroups.has(key)) chapterGroups.set(key,{torrent_name:f.torrent_name||f.torrent_hash,torrent_hash:f.torrent_hash,parent,files:[],mapped:true,exists:true});
+    const g=chapterGroups.get(key);g.files.push(f);g.mapped=g.mapped&&!!f.mapped;g.exists=g.exists&&!!f.exists;
+   }else displayTorrentIssues.push({type:"file",file:f});
+  });
+  chapterGroups.forEach(g=>displayTorrentIssues.push({type:"chapters",group:g}));
+  displayTorrentIssues.sort((a,b)=>String(a.type==="chapters"?a.group.parent:a.file.local_path||a.file.name).localeCompare(String(b.type==="chapters"?b.group.parent:b.file.local_path||b.file.name),"fr"));
+  $("auditTorrentOnly").innerHTML=displayTorrentIssues.slice(0,200).map(item=>{
+   if(item.type==="chapters"){
+    const g=item.group,names=g.files.slice(0,3).map(f=>f.name).join(", ");
+    const reason=!g.mapped?'<span class="pill no">Chemin de stockage non reconnu</span>':!g.exists?'<span class="pill no">Au moins une piste absente du disque</span>':'Pistes de livre audio sans correspondance dans Radarr/Sonarr.';
+    return '<tr><td><strong>Lot de chapitres audio ('+g.files.length+' pistes)</strong><div class="sub">'+esc(names)+(g.files.length>3?'…':'')+'</div></td><td>'+esc(g.torrent_name)+'<div class="sub">'+esc(g.torrent_hash)+'</div></td><td>'+esc(g.parent||"chemin non associé")+'</td><td>'+reason+'</td></tr>';
+   }
+   const f=item.file;
+   return '<tr><td>'+esc(f.name)+'</td><td>'+esc(f.torrent_name)+'<div class="sub">'+esc(f.torrent_hash)+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Chemin de stockage non reconnu</span>':!f.exists?'<span class="pill no">Fichier absent du disque</span>':'Sans correspondance dans Radarr/Sonarr : vérifier si ce fichier doit être dans la bibliothèque.')+'</td></tr>';
+  }).join("");
   const libraryIssues=(d.library_only||[]);
   $("auditLibraryOnly").innerHTML=libraryIssues.slice(0,200).map(f=>'<tr><td>'+esc(f.service)+'</td><td>'+esc(f.name)+'<div class="sub">ID fichier '+esc(f.file_id??"—")+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Chemin de stockage non reconnu</span>':!f.exists?'<span class="pill no">Fichier absent du disque</span>':'Aucun torrent associé : cela peut être normal si le torrent a été supprimé.')+'</td></tr>').join("");
   $("auditCandidatesTitle").hidden=candidates.length===0;
