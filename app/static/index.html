@@ -35,7 +35,7 @@ main{max-width:1500px;margin:auto;padding:24px}.stats{display:grid;grid-template
  <div id="auditSummary" class="audit-grid"></div>
  <div id="auditWarnings" class="muted" style="margin:10px 0"></div>
  <h4>Copies identiques ou candidates à un hardlink</h4>
- <div class="tablewrap"><table><thead><tr><th>Fichier torrent</th><th>Fichier bibliothèque</th><th>Diagnostic</th></tr></thead><tbody id="auditCandidates"></tbody></table></div>
+ <div class="tablewrap"><table><thead><tr><th>Fichier torrent</th><th>Fichier bibliothèque</th><th>Diagnostic</th><th>Action</th></tr></thead><tbody id="auditCandidates"></tbody></table></div>
  <div class="empty" id="auditCandidatesEmpty" hidden>Aucun candidat détecté ou analyse non lancée.</div>
  <h4>Fichiers torrent sans correspondance dans la bibliothèque</h4>
  <div class="tablewrap"><table><thead><tr><th>Fichier</th><th>Torrent</th><th>Chemin local</th><th>État</th></tr></thead><tbody id="auditTorrentOnly"></tbody></table></div>
@@ -105,7 +105,7 @@ async function runAudit(){
   $("auditCandidates").innerHTML=candidates.slice(0,200).map(x=>{
    const t=x.torrent||{},l=x.library||{};
    const label=x.status==="hardlink_confirmed"?"Hardlink confirmé":x.status==="identical_copy_can_be_hardlinked"?"Contenu identique (SHA-256)":"Candidat non vérifié";
-   return '<tr><td>'+esc(t.name||t.remote_path||"—")+'<div class="sub">'+esc(t.local_path||"chemin non associé")+'</div></td><td>'+esc(l.name||l.remote_path||"—")+'<div class="sub">'+esc((l.service||"")+" · "+(l.local_path||"chemin non associé"))+'</div></td><td>'+esc(label)+'<div class="sub">'+esc(x.note||"Même inode et même périphérique.")+'</div></td></tr>';
+   return '<tr><td>'+esc(t.name||t.remote_path||"—")+'<div class="sub">'+esc(t.local_path||"chemin non associé")+'</div></td><td>'+esc(l.name||l.remote_path||"—")+'<div class="sub">'+esc((l.service||"")+" · "+(l.local_path||"chemin non associé"))+'</div></td><td>'+esc(label)+'<div class="sub">'+esc(x.note||"Même inode et même périphérique.")+'</div></td><td>'+(l.service&&l.file_id!=null&&l.mapped&&l.exists?'<button data-action="remove-library-file" data-service="'+esc(l.service)+'" data-file-id="'+esc(l.file_id)+'">Retirer fichier bibliothèque…</button>':'—')+'</td></tr>';
   }).join("");
   $("auditCandidatesEmpty").hidden=candidates.length>0;
   $("auditTorrentOnly").innerHTML=(d.torrent_only||[]).slice(0,200).map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+esc(f.torrent_name)+'<div class="sub">'+esc(f.torrent_hash)+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Non associé</span>':!f.exists?'<span class="pill no">Absent du disque</span>':'À vérifier')+'</td></tr>').join("");
