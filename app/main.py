@@ -482,12 +482,15 @@ def _cache_set_many(entries: dict[str, object]):
 
 def _cached_qbit_torrents(base: str, opener):
     """Reuse a recent complete torrent list across requests and container restarts."""
-    cached = _cache_get("inventory:qbit:torrents", INVENTORY_CACHE_TTL_SECONDS)
+    cached = _cache_get("inventory:v1:qbit:torrents", INVENTORY_CACHE_TTL_SECONDS)
     if cached and isinstance(cached[0], list):
         return cached[0], False, {"torrent_list_source": "cache", "torrent_list_age_seconds": int(cached[1])}
     torrents, truncated = _qbit_all_torrents(base, opener)
     if not truncated:
-        _cache_set_many({"inventory:qbit:torrents": torrents})
+        # Keep only fields used by the audit, rather than persisting the entire qBittorrent response.
+        compact = [{key: torrent.get(key) for key in ("hash", "name", "state", "save_path", "size")}
+                   for torrent in torrents if isinstance(torrent, dict)]
+        _cache_set_many({"inventory:v1:qbit:torrents": compact})
     return torrents, truncated, {"torrent_list_source": "live", "torrent_list_age_seconds": 0}
 
 
