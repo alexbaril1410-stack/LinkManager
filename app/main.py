@@ -1100,7 +1100,7 @@ def audit(user: str = Depends(authenticate)):
                            "local_path": f["local_path"], "exists": f["exists"], "mapped": f["mapped"],
                            "size": f["size"], "nlink": f["nlink"]} for f in library],
         "warnings": [
-            "Les fichiers annexes (NFO, images et fichiers techniques) ainsi que les pistes audio nommées comme des chapitres individuels sont exclus des compteurs principaux ; les livres numériques et livres audio complets restent inclus.",
+            "Les fichiers annexes (NFO, images et fichiers techniques) sont exclus des compteurs principaux ; les pistes de chapitres audio restent dans l’audit mais sont regroupées sur une ligne dans les résultats.",
             "Les associations cross-seed peuvent référencer le même fichier physique ; les compteurs de hardlinks et de copies sont dédupliqués par paire de chemins.",
             "Un chemin identique côté torrent et bibliothèque est compté séparément et n'est pas présenté comme un hardlink.",
             "Un fichier sans correspondance n'est pas nécessairement orphelin : un torrent peut être en seed sans bibliothèque, et une bibliothèque peut rester après suppression du torrent.",
