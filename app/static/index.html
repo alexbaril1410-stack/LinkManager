@@ -106,23 +106,37 @@ async function runAudit(){
    return '<tr><td>'+esc(t.name||t.remote_path||"—")+'<div class="sub">'+esc(t.local_path||"chemin non associé")+'</div></td><td>'+esc(l.name||l.remote_path||"—")+'<div class="sub">'+esc((l.service||"")+" · "+(l.local_path||"chemin non associé"))+'</div></td><td>'+esc(label)+'<div class="sub">'+esc(x.note||"Les éléments semblent correspondre, mais ce n'est pas confirmé.")+'</div></td><td>À examiner manuellement</td></tr>';
   }).join("");
   const torrentIssues=(d.torrent_only||[]);
-  const chapterGroups=new Map(), displayTorrentIssues=[];
+  const audioExt=/\.(mp3|m4a|m4b|aac|flac|ogg|opus|wav)$/i;
+  const numberedTrack=/^\s*\d{1,3}(?:[._ -]+|$)/;
+  const chapterTrack=/(?:\bch(?:apter)?\s*[_ .-]*\d+\b|\bchapitre\s*\d+\b)/i;
+  const audioGroups=new Map(), displayTorrentIssues=[];
   torrentIssues.forEach(f=>{
-   if(f.book_chapter_track){
+   const name=String(f.name||"");
+   if(audioExt.test(name)){
     const path=String(f.local_path||f.remote_path||"");
     const parent=path.includes("/")?path.slice(0,path.lastIndexOf("/")):"";
     const key=String(f.torrent_hash||"")+"|"+parent;
-    if(!chapterGroups.has(key)) chapterGroups.set(key,{torrent_name:f.torrent_name||f.torrent_hash,torrent_hash:f.torrent_hash,parent,files:[],mapped:true,exists:true});
-    const g=chapterGroups.get(key);g.files.push(f);g.mapped=g.mapped&&!!f.mapped;g.exists=g.exists&&!!f.exists;
+    if(!audioGroups.has(key)) audioGroups.set(key,{torrent_name:f.torrent_name||f.torrent_hash,torrent_hash:f.torrent_hash,parent,files:[],mapped:true,exists:true});
+    const g=audioGroups.get(key);g.files.push(f);g.mapped=g.mapped&&!!f.mapped;g.exists=g.exists&&!!f.exists;
    }else displayTorrentIssues.push({type:"file",file:f});
   });
-  chapterGroups.forEach(g=>displayTorrentIssues.push({type:"chapters",group:g}));
+  audioGroups.forEach(g=>{
+   const release=String(g.torrent_name||"").toLowerCase();
+   const numbered=g.files.filter(f=>numberedTrack.test(String(f.name||""))).length;
+   const explicitChapters=g.files.filter(f=>chapterTrack.test(String(f.name||""))).length;
+   const bookLike=/audiobook|audio[ ._-]*book|livre|tome|book|\bmp3\b/.test(release);
+   if(g.files.length>=3 && (explicitChapters>=2 || (numbered/g.files.length>=0.6 && (bookLike || g.files.length>=8)))){
+    displayTorrentIssues.push({type:"chapters",group:g});
+   }else{
+    g.files.forEach(file=>displayTorrentIssues.push({type:"file",file}));
+   }
+  });
   displayTorrentIssues.sort((a,b)=>String(a.type==="chapters"?a.group.parent:a.file.local_path||a.file.name).localeCompare(String(b.type==="chapters"?b.group.parent:b.file.local_path||b.file.name),"fr"));
   $("auditTorrentOnly").innerHTML=displayTorrentIssues.slice(0,200).map(item=>{
    if(item.type==="chapters"){
     const g=item.group,names=g.files.slice(0,3).map(f=>f.name).join(", ");
-    const reason=!g.mapped?'<span class="pill no">Chemin de stockage non reconnu</span>':!g.exists?'<span class="pill no">Au moins une piste absente du disque</span>':'Pistes de livre audio sans correspondance dans Radarr/Sonarr.';
-    return '<tr><td><strong>Lot de chapitres audio ('+g.files.length+' pistes)</strong><div class="sub">'+esc(names)+(g.files.length>3?'…':'')+'</div></td><td>'+esc(g.torrent_name)+'<div class="sub">'+esc(g.torrent_hash)+'</div></td><td>'+esc(g.parent||"chemin non associé")+'</td><td>'+reason+'</td></tr>';
+    const reason=!g.mapped?'<span class="pill no">Chemin de stockage non reconnu</span>':!g.exists?'<span class="pill no">Au moins une piste absente du disque</span>':'Pistes audio regroupées : '+g.files.length+' fichiers sans correspondance dans Radarr/Sonarr.';
+    return '<tr><td><strong>Lot de chapitres / pistes audio ('+g.files.length+')</strong><div class="sub">'+esc(names)+(g.files.length>3?'…':'')+'</div></td><td>'+esc(g.torrent_name)+'<div class="sub">'+esc(g.torrent_hash)+'</div></td><td>'+esc(g.parent||"chemin non associé")+'</td><td>'+reason+'</td></tr>';
    }
    const f=item.file;
    return '<tr><td>'+esc(f.name)+'</td><td>'+esc(f.torrent_name)+'<div class="sub">'+esc(f.torrent_hash)+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Chemin de stockage non reconnu</span>':!f.exists?'<span class="pill no">Fichier absent du disque</span>':'Sans correspondance dans Radarr/Sonarr : vérifier si ce fichier doit être dans la bibliothèque.')+'</td></tr>';
