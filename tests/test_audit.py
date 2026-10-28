@@ -34,6 +34,30 @@ class AuditHelperTests(unittest.TestCase):
                              main._sha256_bounded(second, cache, budget))
             self.assertEqual(budget["files"], 2)
 
+
+    def test_qbittorrent_inventory_is_paginated(self):
+        pages = {
+            0: [{"hash": "a"}] * main.QBITTORRENT_PAGE_SIZE,
+            main.QBITTORRENT_PAGE_SIZE: [{"hash": "b"}],
+        }
+        calls = []
+
+        def fake_request(base, opener, endpoint, params):
+            calls.append(int(params["offset"]))
+            return pages[int(params["offset"])]
+
+        with patch.object(main, "_qbit_json", side_effect=fake_request):
+            torrents, truncated = main._qbit_all_torrents("http://qbit", object())
+        self.assertEqual(len(torrents), main.QBITTORRENT_PAGE_SIZE + 1)
+        self.assertFalse(truncated)
+        self.assertEqual(calls, [0, main.QBITTORRENT_PAGE_SIZE])
+
+    def test_qbittorrent_inventory_marks_safety_ceiling_as_truncated(self):
+        with patch.object(main, "_qbit_json", return_value=[{"hash": "a"}] * 2):
+            torrents, truncated = main._qbit_all_torrents("http://qbit", object(), max_torrents=2)
+        self.assertEqual(len(torrents), 2)
+        self.assertTrue(truncated)
+
     def test_manual_actions_require_exact_confirmation(self):
         with self.assertRaises(HTTPException):
             main._require_manual_confirmation(main.ManualAction(confirm_text="supprimer"))
