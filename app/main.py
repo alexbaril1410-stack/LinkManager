@@ -774,10 +774,16 @@ def _build_audit_inventory():
         if not _integration_config(service)["url"] or not _integration_config(service)["api_key"]:
             continue
         try:
-            entries = _cached_arr_inventory(service, endpoint, cache_stats)
-            # Some Radarr/Sonarr versions return an empty list when the file endpoint
-            # is called without its parent ID. Fall back to per-movie/per-series queries
-            # so a connected API does not silently produce a zero-file library audit.
+            # Some API versions reject the bulk file endpoint when no parent ID is
+            # supplied. Treat that as a reason to use the per-parent fallback instead
+            # of abandoning this service's inventory.
+            try:
+                entries = _cached_arr_inventory(service, endpoint, cache_stats)
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError, HTTPException) as exc:
+                logger.warning("Audit bulk file inventory unavailable service=%s error=%s", service, type(exc).__name__)
+                entries = []
+            # If the bulk endpoint is empty or unavailable, query the catalog and then
+            # fetch files per movie/series. This remains read-only.
             if isinstance(entries, list) and not entries:
                 catalog_endpoint = "movie" if service == "RADARR" else "series"
                 catalog = _cached_arr_inventory(service, catalog_endpoint, cache_stats)
@@ -808,8 +814,8 @@ def _build_audit_inventory():
                     if recovered:
                         entries = recovered
                         logger.info("Audit inventory recovered service=%s files=%s using per-parent API", service, len(entries))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError, HTTPException):
-            logger.warning("Audit library inventory unavailable service=%s", service)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError, HTTPException) as exc:
+            logger.warning("Audit library inventory unavailable service=%s error=%s", service, type(exc).__name__)
             continue
         if not isinstance(entries, list):
             continue
