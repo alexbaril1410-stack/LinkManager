@@ -98,7 +98,7 @@ async function runAudit(){
    ["Fichiers bibliothèque sans torrent associé (total)",d.summary.library_files_without_torrent_match]
   ];
   $("auditSummary").innerHTML=labels.map(([label,value])=>'<div class="audit-stat"><span class="muted">'+esc(label)+'</span><b>'+esc(value??"—")+'</b></div>').join("");
-  $("auditWarnings").textContent=(d.warnings||[]).filter(w=>w&&/erreur|échec|échoué|absent|non associé|non vérifié|limite|inaccessible|impossible/i.test(w)).join(" ");
+  $("auditWarnings").textContent=(d.warnings||[]).filter(w=>w&&/^(erreur|échec|attention\s*:|avertissement critique)/i.test(w.trim())).join(" ");
   const candidates=(d.potential_hardlinks||[]).filter(x=>x.status!=="hardlink_confirmed"&&x.status!=="same_path_match");
   $("auditCandidates").innerHTML=candidates.slice(0,200).map(x=>{
    const t=x.torrent||{},l=x.library||{};
