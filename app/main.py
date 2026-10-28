@@ -988,8 +988,8 @@ def audit(user: str = Depends(authenticate)):
         i for i, f in enumerate(torrent_files) if not _audit_is_ignored_sidecar(f)
     }
     for index, torrent_file in enumerate(torrent_files):
-        # Release sidecars and individually split audiobook chapter tracks are
-        # excluded from unmatched-file checks. Complete books/audiobooks remain.
+        # Release sidecars are excluded from unmatched-file checks. Chapter tracks
+        # remain audited and are grouped only in the results display.
         if index not in audited_torrent_indices:
             continue
         if torrent_file["exists"]:
