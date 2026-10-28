@@ -427,6 +427,25 @@ def _audit_is_ignored_sidecar(record: dict) -> bool:
     return Path(str(record.get("name", ""))).suffix.casefold() in AUDIT_IGNORED_SIDECAR_EXTENSIONS
 
 
+# Audiobook releases split into one file per chapter create dozens of false
+# "unmatched" entries because Radarr/Sonarr do not manage books or audiobooks.
+# Ignore only clearly named chapter tracks; keep complete audiobooks (M4B, MP3,
+# etc.), ebooks, and other book files in the audit.
+AUDIT_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4b", ".aac", ".flac", ".ogg", ".opus", ".wav"}
+AUDIT_BOOK_CHAPTER_RE = re.compile(
+    r"(?:^|[\\s._-])(?:chapitre|chapter)\\s*[-_. ]*\\d+(?:\\b|$)",
+    re.IGNORECASE,
+)
+
+
+def _audit_is_book_chapter(record: dict) -> bool:
+    name = str(record.get("name", ""))
+    return (
+        Path(name).suffix.casefold() in AUDIT_AUDIO_EXTENSIONS
+        and bool(AUDIT_BOOK_CHAPTER_RE.search(Path(name).stem))
+    )
+
+
 # Persistent inventory cache. The database lives on a dedicated Docker volume.
 CACHE_DB_PATH = os.getenv("LINKMANAGER_DB_PATH", "/app/data/linkmanager.sqlite3")
 INVENTORY_CACHE_TTL_SECONDS = max(30, int(os.getenv("INVENTORY_CACHE_TTL_SECONDS", "300")))
@@ -927,10 +946,14 @@ def audit(user: str = Depends(authenticate)):
     hash_budget = {"bytes": 0, "files": 0}
     pair_checks = 0
     ignored_sidecar_count = sum(1 for f in torrent_files if _audit_is_ignored_sidecar(f))
-    audited_torrent_indices = {i for i, f in enumerate(torrent_files) if not _audit_is_ignored_sidecar(f)}
+    ignored_book_chapter_count = sum(1 for f in torrent_files if _audit_is_book_chapter(f))
+    audited_torrent_indices = {
+        i for i, f in enumerate(torrent_files)
+        if not _audit_is_ignored_sidecar(f) and not _audit_is_book_chapter(f)
+    }
     for index, torrent_file in enumerate(torrent_files):
-        # Sidecars such as NFOs and artwork are intentionally outside the main
-        # audit. Books and audiobooks (EPUB, PDF, M4B, etc.) remain included.
+        # Release sidecars and individually split audiobook chapter tracks are
+        # excluded from unmatched-file checks. Complete books/audiobooks remain.
         if index not in audited_torrent_indices:
             continue
         if torrent_file["exists"]:
@@ -1025,6 +1048,7 @@ def audit(user: str = Depends(authenticate)):
             "library_files_without_torrent_match": sum(1 for f in library if id(f) not in matched_library),
             "torrent_files_included_in_audit": len(audited_torrent_indices),
             "ignored_sidecar_files": ignored_sidecar_count,
+            "ignored_book_chapter_files": ignored_book_chapter_count,
             "hash_bytes_read": hash_budget["bytes"], "hash_files_read": hash_budget["files"],
         },
         "matches": matches[:1000],
@@ -1040,7 +1064,7 @@ def audit(user: str = Depends(authenticate)):
                            "local_path": f["local_path"], "exists": f["exists"], "mapped": f["mapped"],
                            "size": f["size"], "nlink": f["nlink"]} for f in library],
         "warnings": [
-            "Les fichiers annexes (NFO, images et fichiers techniques de release) sont exclus des compteurs principaux ; les livres et livres audio restent inclus.",
+            "Les fichiers annexes (NFO, images et fichiers techniques) ainsi que les pistes audio nommées comme des chapitres individuels sont exclus des compteurs principaux ; les livres numériques et livres audio complets restent inclus.",
             "Les associations cross-seed peuvent référencer le même fichier physique ; les compteurs de hardlinks et de copies sont dédupliqués par paire de chemins.",
             "Un chemin identique côté torrent et bibliothèque est compté séparément et n'est pas présenté comme un hardlink.",
             "Un fichier sans correspondance n'est pas nécessairement orphelin : un torrent peut être en seed sans bibliothèque, et une bibliothèque peut rester après suppression du torrent.",
