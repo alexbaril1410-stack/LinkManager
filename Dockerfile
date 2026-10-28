@@ -5,7 +5,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && useradd --system --uid 10001 --create-home appuser
 COPY app ./app
-RUN python -m compileall -q app \
+RUN mkdir -p /app/data \
+    && python -m compileall -q app \
     && chown -R appuser:appuser /app
 USER 10001:10001
 EXPOSE 8080
