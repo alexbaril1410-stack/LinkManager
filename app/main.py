@@ -582,8 +582,16 @@ def _qbit_session():
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
         login_data = urllib.parse.urlencode({"username": cfg["username"], "password": cfg["password"]}).encode()
         headers = {"User-Agent": "LinkManager/1.0", "Referer": base + "/", "Content-Type": "application/x-www-form-urlencoded"}
-        answer, _ = _request_json_method(base + "/api/v2/auth/login", "POST", headers, opener, login_data)
-        if answer != "Ok.":
+        # qBittorrent versions/reverse proxies may vary in the login response body.
+        # Verify the resulting cookie session against an authenticated endpoint instead
+        # of relying solely on the exact literal returned by /auth/login.
+        _request_json_method(base + "/api/v2/auth/login", "POST", headers, opener, login_data)
+        version, _ = _request_json_method(
+            base + "/api/v2/app/version",
+            headers={"Accept": "application/json", "User-Agent": "LinkManager/1.0"},
+            opener=opener,
+        )
+        if not isinstance(version, str) or not version.strip() or version.lower().strip() == "fails.":
             raise HTTPException(status_code=502, detail="Authentification qBittorrent refusée.")
         return base, opener
     except HTTPException:
