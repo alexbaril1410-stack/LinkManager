@@ -405,6 +405,9 @@ def integrations(user: str = Depends(authenticate)):
 import hashlib
 import re
 import posixpath
+import sqlite3
+import threading
+import time
 
 MAX_AUDIT_TORRENTS = 50000
 QBITTORRENT_PAGE_SIZE = 500
@@ -412,6 +415,114 @@ MAX_AUDIT_FILES = 50000
 MAX_AUDIT_HASH_FILE_BYTES = 1024 * 1024 * 1024
 MAX_AUDIT_HASH_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_AUDIT_HASH_PAIRS = 80
+
+# Persistent inventory cache. The database lives on a dedicated Docker volume.
+CACHE_DB_PATH = os.getenv("LINKMANAGER_DB_PATH", "/app/data/linkmanager.sqlite3")
+INVENTORY_CACHE_TTL_SECONDS = max(30, int(os.getenv("INVENTORY_CACHE_TTL_SECONDS", "300")))
+_cache_lock = threading.RLock()
+_cache_connection = None
+
+
+def _cache_db():
+    """Return a process-wide SQLite connection, creating the schema on first use."""
+    global _cache_connection
+    with _cache_lock:
+        if _cache_connection is None:
+            db_path = Path(CACHE_DB_PATH)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(str(db_path), timeout=10, check_same_thread=False)
+            connection.execute("PRAGMA busy_timeout = 10000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS cache_entries ("
+                "cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL)"
+            )
+            connection.commit()
+            _cache_connection = connection
+        return _cache_connection
+
+
+def _cache_get(key: str, max_age: int | None = None):
+    """Return (decoded JSON value, age seconds), or None for a miss/expired entry."""
+    try:
+        with _cache_lock:
+            row = _cache_db().execute(
+                "SELECT payload, updated_at FROM cache_entries WHERE cache_key = ?", (key,)
+            ).fetchone()
+        if not row:
+            return None
+        age = max(0, time.time() - float(row[1]))
+        if max_age is not None and age > max_age:
+            return None
+        return json.loads(row[0]), age
+    except (OSError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
+        logger.warning("Persistent cache read unavailable error=%s", type(exc).__name__)
+        return None
+
+
+def _cache_set_many(entries: dict[str, object]):
+    """Write a batch in one transaction to avoid one fsync per torrent."""
+    if not entries:
+        return
+    now = time.time()
+    try:
+        rows = [(key, json.dumps(value, ensure_ascii=False, separators=(",", ":")), now)
+                for key, value in entries.items()]
+        with _cache_lock:
+            connection = _cache_db()
+            connection.executemany(
+                "INSERT INTO cache_entries(cache_key, payload, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
+                rows,
+            )
+            connection.commit()
+    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        logger.warning("Persistent cache write unavailable error=%s", type(exc).__name__)
+
+
+def _cached_qbit_torrents(base: str, opener):
+    """Reuse a recent complete torrent list across requests and container restarts."""
+    cached = _cache_get("inventory:qbit:torrents", INVENTORY_CACHE_TTL_SECONDS)
+    if cached and isinstance(cached[0], list):
+        return cached[0], False, {"torrent_list_source": "cache", "torrent_list_age_seconds": int(cached[1])}
+    torrents, truncated = _qbit_all_torrents(base, opener)
+    if not truncated:
+        _cache_set_many({"inventory:qbit:torrents": torrents})
+    return torrents, truncated, {"torrent_list_source": "live", "torrent_list_age_seconds": 0}
+
+
+def _cached_qbit_torrent_files(base: str, opener, torrent_hash: str, stats: dict,
+                               pending: dict[str, object]):
+    """Cache file metadata by torrent hash; a hash identifies immutable torrent contents."""
+    key = "inventory:qbit:files:" + torrent_hash
+    cached = _cache_get(key)
+    if cached and isinstance(cached[0], list):
+        stats["torrent_file_cache_hits"] += 1
+        return cached[0]
+    stats["torrent_file_cache_misses"] += 1
+    files = _qbit_json(base, opener, "/api/v2/torrents/files", {"hash": torrent_hash})
+    if not isinstance(files, list):
+        files = []
+    pending[key] = files
+    if len(pending) >= 250:
+        _cache_set_many(pending)
+        pending.clear()
+    return files
+
+
+def _cached_arr_inventory(service: str, endpoint: str, stats: dict):
+    key = f"inventory:{service.lower()}:{endpoint}"
+    cached = _cache_get(key, INVENTORY_CACHE_TTL_SECONDS)
+    if cached and isinstance(cached[0], list):
+        stats["arr_cache_hits"] += 1
+        return cached[0]
+    stats["arr_cache_misses"] += 1
+    entries = _get_arr_data(service, endpoint)
+    if isinstance(entries, list):
+        _cache_set_many({key: entries})
+    return entries
+
+
 
 
 class ManualAction(BaseModel):
@@ -610,7 +721,10 @@ def _qbit_all_torrents(base: str, opener, max_torrents: int = MAX_AUDIT_TORRENTS
 
 def _build_audit_inventory():
     base, opener = _qbit_session()
-    raw_torrents, truncated_torrents = _qbit_all_torrents(base, opener)
+    raw_torrents, truncated_torrents, cache_stats = _cached_qbit_torrents(base, opener)
+    cache_stats.update({"torrent_file_cache_hits": 0, "torrent_file_cache_misses": 0,
+                        "arr_cache_hits": 0, "arr_cache_misses": 0})
+    pending_cache_writes = {}
     torrent_records = []
     scanned_torrent_files = 0
     for torrent in raw_torrents:
@@ -622,7 +736,7 @@ def _build_audit_inventory():
                           "save_path": str(torrent.get("save_path", ""))[:1024],
                           "size": torrent.get("size") if isinstance(torrent.get("size"), (int, float)) else None,
                           "files": []}
-        files = _qbit_json(base, opener, "/api/v2/torrents/files", {"hash": torrent_hash})
+        files = _cached_qbit_torrent_files(base, opener, torrent_hash, cache_stats, pending_cache_writes)
         if not isinstance(files, list):
             files = []
         for item in files:
@@ -649,7 +763,7 @@ def _build_audit_inventory():
         if not _integration_config(service)["url"] or not _integration_config(service)["api_key"]:
             continue
         try:
-            entries = _get_arr_data(service, endpoint)
+            entries = _cached_arr_inventory(service, endpoint, cache_stats)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError, HTTPException):
             logger.warning("Audit library inventory unavailable service=%s", service)
             continue
@@ -666,7 +780,9 @@ def _build_audit_inventory():
             })
             if len(library_records) >= MAX_AUDIT_FILES:
                 break
-    return torrent_records, library_records, truncated_torrents, scanned_torrent_files
+    _cache_set_many(pending_cache_writes)
+    cache_stats["ttl_seconds"] = INVENTORY_CACHE_TTL_SECONDS
+    return torrent_records, library_records, truncated_torrents, scanned_torrent_files, cache_stats
 
 
 
@@ -725,7 +841,7 @@ def _arr_file_references():
 def audit(user: str = Depends(authenticate)):
     """Read-only cross-check of torrent files, media-library files, and actual filesystem identities."""
     try:
-        torrents, library, truncated_torrents, scanned_torrent_files = _build_audit_inventory()
+        torrents, library, truncated_torrents, scanned_torrent_files, cache_stats = _build_audit_inventory()
     except HTTPException:
         raise
     except Exception:
@@ -788,6 +904,7 @@ def audit(user: str = Depends(authenticate)):
     identical_count = sum(1 for m in potential_hardlinks if m["status"] == "identical_copy_can_be_hardlinked")
     return {
         "read_only": True,
+        "cache": cache_stats,
         "summary": {
             "torrents_scanned": len(torrents), "torrent_files_scanned": scanned_torrent_files,
             "library_files_scanned": len(library), "confirmed_hardlink_pairs": hardlink_count,
