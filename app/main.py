@@ -429,21 +429,53 @@ def _audit_is_ignored_sidecar(record: dict) -> bool:
 
 # Audiobook releases split into one file per chapter create dozens of false
 # "unmatched" entries because Radarr/Sonarr do not manage books or audiobooks.
-# Ignore only clearly named chapter tracks; keep complete audiobooks (M4B, MP3,
-# etc.), ebooks, and other book files in the audit.
 AUDIT_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4b", ".aac", ".flac", ".ogg", ".opus", ".wav"}
 AUDIT_BOOK_CHAPTER_RE = re.compile(
     r"(?:^|[\s._-])(?:chapitre|chapter)\s*[-_. ]*\d+(?:\b|$)",
     re.IGNORECASE,
 )
+AUDIT_TRACK_PREFIX_RE = re.compile(r"^\s*\d{1,3}(?:\s*[._-]\s*|\s+)")
 
 
-def _audit_is_book_chapter(record: dict) -> bool:
-    name = str(record.get("name", ""))
-    return (
-        Path(name).suffix.casefold() in AUDIT_AUDIO_EXTENSIONS
-        and bool(AUDIT_BOOK_CHAPTER_RE.search(Path(name).stem))
-    )
+def _audit_book_chapter_indices(torrent_files: list[dict]) -> set[int]:
+    """Detect multi-file audiobook releases, including tracks without 'chapter' in the filename."""
+    groups = {}
+    for index, record in enumerate(torrent_files):
+        name = str(record.get("name", ""))
+        if Path(name).suffix.casefold() not in AUDIT_AUDIO_EXTENSIONS:
+            continue
+        remote_path = str(record.get("remote_path", ""))
+        parent = posixpath.dirname(remote_path).casefold()
+        torrent_hash = str(record.get("torrent_hash", "")).casefold()
+        groups.setdefault((torrent_hash, parent), []).append((index, record))
+
+    ignored = set()
+    for entries in groups.values():
+        if len(entries) < 3:
+            continue
+        release_context = " ".join(
+            str(record.get(key, "")) for _, record in entries
+            for key in ("torrent_name", "remote_path")
+        ).casefold()
+        explicit_audiobook = bool(re.search(
+            r"audiobook|audio[ ._-]*book|livre[ ._-]*audio|\bmp3[ ._-]*\d{2,3}\b",
+            release_context,
+        ))
+        chapter_named = sum(
+            bool(AUDIT_BOOK_CHAPTER_RE.search(Path(str(record.get("name", ""))).stem))
+            for _, record in entries
+        )
+        numbered_tracks = sum(
+            bool(AUDIT_TRACK_PREFIX_RE.match(Path(str(record.get("name", ""))).stem))
+            for _, record in entries
+        )
+        # Require a clear audiobook/release signal or explicit chapter names,
+        # plus a majority of numbered tracks. Avoid filtering ordinary music albums.
+        if numbered_tracks / len(entries) >= 0.6 and (
+            explicit_audiobook or chapter_named / len(entries) >= 0.5
+        ):
+            ignored.update(index for index, _ in entries)
+    return ignored
 
 
 # Persistent inventory cache. The database lives on a dedicated Docker volume.
@@ -946,10 +978,11 @@ def audit(user: str = Depends(authenticate)):
     hash_budget = {"bytes": 0, "files": 0}
     pair_checks = 0
     ignored_sidecar_count = sum(1 for f in torrent_files if _audit_is_ignored_sidecar(f))
-    ignored_book_chapter_count = sum(1 for f in torrent_files if _audit_is_book_chapter(f))
+    ignored_book_chapter_indices = _audit_book_chapter_indices(torrent_files)
+    ignored_book_chapter_count = len(ignored_book_chapter_indices)
     audited_torrent_indices = {
         i for i, f in enumerate(torrent_files)
-        if not _audit_is_ignored_sidecar(f) and not _audit_is_book_chapter(f)
+        if not _audit_is_ignored_sidecar(f) and i not in ignored_book_chapter_indices
     }
     for index, torrent_file in enumerate(torrent_files):
         # Release sidecars and individually split audiobook chapter tracks are
