@@ -64,5 +64,43 @@ class AuditHelperTests(unittest.TestCase):
         main._require_manual_confirmation(main.ManualAction(confirm_text="SUPPRIMER"))
 
 
+class PersistentCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.old_path = main.CACHE_DB_PATH
+        if main._cache_connection is not None:
+            main._cache_connection.close()
+        main._cache_connection = None
+        self.tempdir = tempfile.TemporaryDirectory()
+        main.CACHE_DB_PATH = str(Path(self.tempdir.name) / "cache.sqlite3")
+
+    def tearDown(self):
+        if main._cache_connection is not None:
+            main._cache_connection.close()
+        main._cache_connection = None
+        main.CACHE_DB_PATH = self.old_path
+        self.tempdir.cleanup()
+
+    def test_cache_survives_sqlite_connection_reinitialization(self):
+        expected = [{"hash": "abc", "name": "cached torrent"}]
+        main._cache_set_many({"test:inventory": expected})
+        main._cache_connection.close()
+        main._cache_connection = None
+        cached = main._cache_get("test:inventory")
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached[0], expected)
+
+    def test_cached_torrent_files_avoid_qbittorrent_request(self):
+        torrent_hash = "a" * 40
+        expected = [{"name": "movie.mkv", "size": 123}]
+        main._cache_set_many({"inventory:qbit:files:" + torrent_hash: expected})
+        stats = {"torrent_file_cache_hits": 0, "torrent_file_cache_misses": 0}
+        pending = {}
+        with patch.object(main, "_qbit_json", side_effect=AssertionError("unexpected qBittorrent request")):
+            files = main._cached_qbit_torrent_files("http://qbit", object(), torrent_hash, stats, pending)
+        self.assertEqual(files, expected)
+        self.assertEqual(stats["torrent_file_cache_hits"], 1)
+        self.assertEqual(stats["torrent_file_cache_misses"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
