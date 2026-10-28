@@ -433,7 +433,7 @@ def _audit_is_ignored_sidecar(record: dict) -> bool:
 # etc.), ebooks, and other book files in the audit.
 AUDIT_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4b", ".aac", ".flac", ".ogg", ".opus", ".wav"}
 AUDIT_BOOK_CHAPTER_RE = re.compile(
-    r"(?:^|[\\s._-])(?:chapitre|chapter)\\s*[-_. ]*\\d+(?:\\b|$)",
+    r"(?:^|[\s._-])(?:chapitre|chapter)\s*[-_. ]*\\d+(?:\b|$)",
     re.IGNORECASE,
 )
 
