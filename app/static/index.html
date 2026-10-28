@@ -136,7 +136,7 @@ async function runManualAction(button){
  const answer=prompt(description+".\n\nVérifie l'action, puis saisis exactement SUPPRIMER pour confirmer.");
  if(answer!=="SUPPRIMER")return;
  button.disabled=true;
- try{const result=await api(endpoint,{method:"POST",body:JSON.stringify({...payload,confirm_text:answer})});$("auditStatus").textContent="Action exécutée : "+description+". "+(result.note||"");await runAudit();}
+ try{const result=await api(endpoint,{method:"POST",body:JSON.stringify({...payload,confirm_text:answer})});await runAudit();$("auditStatus").textContent="Action exécutée : "+description+". "+(result.note||"");}
  catch(e){$("auditStatus").textContent="Action refusée ou échouée : "+e.message;button.disabled=false;}
 }
 $("runAudit").onclick=runAudit;
