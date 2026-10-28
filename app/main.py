@@ -652,6 +652,33 @@ def _build_audit_inventory():
     return torrent_records, library_records, truncated_torrents, scanned_torrent_files
 
 
+
+def _arr_file_references():
+    """Return mapped file paths currently referenced by Radarr/Sonarr."""
+    references = []
+    for service, endpoint, id_field, parent_field in (
+        ("RADARR", "moviefile", "id", "movieId"),
+        ("SONARR", "episodefile", "id", "seriesId"),
+    ):
+        cfg = _integration_config(service)
+        if not cfg["url"] or not cfg["api_key"]:
+            continue
+        try:
+            entries = _get_arr_data(service, endpoint)
+        except Exception:
+            # Fail closed for destructive actions if an enabled service cannot be checked.
+            raise HTTPException(status_code=409, detail=f"Impossible de vérifier les références de fichiers dans {service.title()} ; action refusée.")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=409, detail=f"Inventaire des fichiers invalide dans {service.title()} ; action refusée.")
+        for entry in entries:
+            remote = str(entry.get("path", ""))
+            local = _mapped_local_path(service, remote)
+            if local is not None:
+                references.append({"service": service, "file_id": entry.get(id_field),
+                                   "item_id": entry.get(parent_field), "remote_path": remote,
+                                   "local_path": str(local)})
+    return references
+
 @app.get("/api/audit")
 def audit(user: str = Depends(authenticate)):
     """Read-only cross-check of torrent files, media-library files, and actual filesystem identities."""
@@ -765,11 +792,14 @@ def remove_torrent(payload: TorrentRemoval, user: str = Depends(authenticate)):
         if not isinstance(files, list) or not files:
             raise HTTPException(status_code=409, detail="Impossible de vérifier les fichiers du torrent ; suppression des fichiers refusée.")
         save_path = str(info[0].get("save_path", ""))
+        arr_references = _arr_file_references()
         for item in files:
             remote = posixpath.normpath(posixpath.join(save_path, str(item.get("name", ""))))
             local = _mapped_local_path("QBITTORRENT", remote)
             if local is None or not local.exists() or local.is_symlink() or not local.is_file():
                 raise HTTPException(status_code=409, detail="Au moins un fichier du torrent n'est pas mappé ou vérifiable sous /media. Retrait du torrent sans effacer ses fichiers possible.")
+            if any(ref["local_path"] == str(local) for ref in arr_references):
+                raise HTTPException(status_code=409, detail="Un fichier du torrent est aussi référencé directement par Radarr/Sonarr au même chemin. Retrait du torrent sans supprimer ses fichiers possible.")
     base, opener = _qbit_session()
     _qbit_post(base, opener, "/api/v2/torrents/delete", {"hashes": torrent_hash, "deleteFiles": "true" if payload.delete_files else "false"})
     logger.warning("MANUAL_ACTION user=%s action=remove_torrent hash=%s delete_files=%s", user, torrent_hash, payload.delete_files)
@@ -788,6 +818,12 @@ def remove_library_file(payload: ArrFileRemoval, user: str = Depends(authenticat
     local = _mapped_local_path(payload.service, remote)
     if local is None or not local.exists() or local.is_symlink() or not local.is_file():
         raise HTTPException(status_code=409, detail="Chemin non associé ou fichier non vérifiable sous /media ; suppression refusée.")
+    references = _arr_file_references()
+    same_path_references = [ref for ref in references
+                            if ref["local_path"] == str(local)
+                            and not (ref["service"] == payload.service and ref["file_id"] == payload.file_id)]
+    if same_path_references:
+        raise HTTPException(status_code=409, detail="Ce chemin est référencé par un autre fichier de bibliothèque. Résous cette référence avant de supprimer.")
     # This removes the library file path only. If it is a hardlink, other names remain intact.
     _arr_request(payload.service, f"{endpoint}/{payload.file_id}", "DELETE")
     logger.warning("MANUAL_ACTION user=%s action=remove_library_file service=%s file_id=%s path=%s nlink=%s",
