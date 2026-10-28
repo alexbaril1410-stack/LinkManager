@@ -653,6 +653,33 @@ def _build_audit_inventory():
 
 
 
+
+def _qbit_content_references(local_path: Path):
+    """Find torrents whose mapped content path is the file or a parent directory of it."""
+    cfg = _integration_config("QBITTORRENT")
+    if not cfg["url"] or not cfg["username"] or not cfg["password"]:
+        raise HTTPException(status_code=409, detail="qBittorrent doit être configuré pour vérifier les références avant de supprimer ce fichier.")
+    base, opener = _qbit_session()
+    torrents = _qbit_json(base, opener, "/api/v2/torrents/info", {"limit": "500"})
+    if not isinstance(torrents, list):
+        raise HTTPException(status_code=409, detail="Inventaire qBittorrent invalide ; suppression refusée.")
+    if len(torrents) >= 500:
+        raise HTTPException(status_code=409, detail="Plus de 500 torrents : vérification des références incomplète, suppression refusée.")
+    target = local_path.resolve()
+    refs = []
+    for torrent in torrents:
+        content = str(torrent.get("content_path", ""))
+        mapped = _mapped_local_path("QBITTORRENT", content)
+        if mapped is None:
+            continue
+        try:
+            target.relative_to(mapped.resolve())
+            refs.append({"hash": str(torrent.get("hash", "")), "name": str(torrent.get("name", "")),
+                         "content_path": content, "local_path": str(mapped)})
+        except ValueError:
+            continue
+    return refs
+
 def _arr_file_references():
     """Return mapped file paths currently referenced by Radarr/Sonarr."""
     references = []
@@ -824,6 +851,9 @@ def remove_library_file(payload: ArrFileRemoval, user: str = Depends(authenticat
                             and not (ref["service"] == payload.service and ref["file_id"] == payload.file_id)]
     if same_path_references:
         raise HTTPException(status_code=409, detail="Ce chemin est référencé par un autre fichier de bibliothèque. Résous cette référence avant de supprimer.")
+    torrent_references = _qbit_content_references(local)
+    if torrent_references:
+        raise HTTPException(status_code=409, detail="Ce fichier est situé dans le contenu d'un torrent qBittorrent. Retire d'abord le torrent ou utilise un hardlink distinct après vérification.")
     # This removes the library file path only. If it is a hardlink, other names remain intact.
     _arr_request(payload.service, f"{endpoint}/{payload.file_id}", "DELETE")
     logger.warning("MANUAL_ACTION user=%s action=remove_library_file service=%s file_id=%s path=%s nlink=%s",
