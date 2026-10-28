@@ -40,3 +40,26 @@ Ouvre LinkManager puis clique sur **Tester les connexions**. Le panneau affiche 
 - Les identifiants ne sont jamais retournés par l'API LinkManager.
 - Si la connexion échoue, vérifie l'URL depuis le conteneur, la clé API, les identifiants et les règles réseau.
 - LinkManager n'effectue pas de nettoyage automatique. Les chemins de stockage affichés ne suffisent pas, à eux seuls, à conclure qu'un fichier peut être supprimé.
+
+
+## 5. Diagnostic croisé et actions manuelles
+
+Le bouton **Analyser les médias** appelle `GET /api/audit`. Il rapproche les fichiers qBittorrent, les fichiers Radarr/Sonarr et les chemins réellement visibles sous `/media`.
+
+- **Hardlink confirmé** : même périphérique et même inode pour les chemins locaux.
+- **Contenu identique** : SHA-256 identique ; la création d'un hardlink est envisageable seulement si les fichiers sont sur le même système de fichiers.
+- **Candidat non vérifié** : nom et taille identiques, mais comparaison de contenu non effectuée.
+- **Sans correspondance** : simple signalement à examiner, pas une preuve d'orphelin.
+- Le diagnostic est borné à 200 torrents, 5 000 fichiers et 4 Gio de lecture SHA-256 par analyse.
+
+### Actions explicitement déclenchées
+
+Chaque action demande la saisie exacte de `SUPPRIMER`. Les routes disponibles sont :
+
+- `POST /api/actions/remove-torrent` : retire un torrent, avec choix de conserver ou demander à qBittorrent de supprimer ses fichiers. Pour supprimer les fichiers, tous les chemins doivent être associés et vérifiables sous `/media`.
+- `POST /api/actions/remove-library-file` : demande à Radarr/Sonarr de retirer un fichier de bibliothèque. Un autre nom de hardlink, s'il existe, reste indépendant.
+- `POST /api/actions/unmonitor` : désactive la surveillance d'un film ou d'une série.
+- `POST /api/actions/remove-library-item` : retire l'entrée Radarr/Sonarr, arrête sa surveillance et ajoute une exclusion, sans supprimer les fichiers sur disque.
+- `POST /api/actions/remove-empty-folder` : retire uniquement un dossier vide ; le système de fichiers refuse l'opération si le dossier contient encore quelque chose.
+
+Les actions sont manuelles et sont consignées dans les journaux. Les secrets d'API restent côté serveur. Vérifie toujours l'élément et les chemins affichés avant de confirmer.

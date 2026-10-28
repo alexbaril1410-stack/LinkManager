@@ -399,6 +399,513 @@ def integrations(user: str = Depends(authenticate)):
     return result
 
 
+
+
+# --- Cross-application audit and explicitly confirmed manual actions ---
+import hashlib
+import re
+import posixpath
+
+MAX_AUDIT_TORRENTS = 200
+MAX_AUDIT_FILES = 5000
+MAX_AUDIT_HASH_FILE_BYTES = 1024 * 1024 * 1024
+MAX_AUDIT_HASH_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+MAX_AUDIT_HASH_PAIRS = 80
+
+
+class ManualAction(BaseModel):
+    confirm_text: str = Field(min_length=1, max_length=32)
+
+
+class TorrentRemoval(ManualAction):
+    torrent_hash: str = Field(min_length=40, max_length=40)
+    delete_files: bool = False
+
+
+class ArrFileRemoval(ManualAction):
+    service: str = Field(pattern="^(RADARR|SONARR)$")
+    file_id: int = Field(gt=0)
+
+
+class ArrItemAction(ManualAction):
+    service: str = Field(pattern="^(RADARR|SONARR)$")
+    item_id: int = Field(gt=0)
+
+
+class EmptyFolderRemoval(ManualAction):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+def _require_manual_confirmation(payload: ManualAction):
+    if payload.confirm_text != "SUPPRIMER":
+        raise HTTPException(status_code=400, detail="Confirmation refusée. Saisis exactement SUPPRIMER pour valider cette action.")
+    
+
+def _request_json_method(url: str, method: str = "GET", headers: dict | None = None,
+                         opener=None, data: bytes | None = None):
+    request = urllib.request.Request(url, headers=headers or {}, data=data, method=method)
+    client = opener or urllib.request.build_opener()
+    with client.open(request, timeout=8) as response:
+        body = response.read(2_000_000)
+        if len(body) >= 2_000_000:
+            raise ValueError("Réponse trop volumineuse")
+        if not body:
+            return None, response.status
+        content_type = response.headers.get("Content-Type", "")
+        if "json" in content_type.lower():
+            return json.loads(body.decode("utf-8")), response.status
+        return body.decode("utf-8", errors="replace").strip(), response.status
+
+
+def _qbit_session():
+    cfg = _integration_config("QBITTORRENT")
+    if not cfg["url"] or not cfg["username"] or not cfg["password"]:
+        raise HTTPException(status_code=503, detail="qBittorrent n'est pas configuré.")
+    try:
+        base = _safe_base_url(cfg["url"])
+        jar = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        login_data = urllib.parse.urlencode({"username": cfg["username"], "password": cfg["password"]}).encode()
+        headers = {"User-Agent": "LinkManager/1.0", "Referer": base + "/", "Content-Type": "application/x-www-form-urlencoded"}
+        answer, _ = _request_json_method(base + "/api/v2/auth/login", "POST", headers, opener, login_data)
+        if answer != "Ok.":
+            raise HTTPException(status_code=502, detail="Authentification qBittorrent refusée.")
+        return base, opener
+    except HTTPException:
+        raise
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=502, detail="Connexion qBittorrent impossible.")
+
+
+def _qbit_json(base: str, opener, endpoint: str, params: dict | None = None):
+    query = "?" + urllib.parse.urlencode(params) if params else ""
+    try:
+        return _request_json_method(base + endpoint + query, headers={"Accept": "application/json", "User-Agent": "LinkManager/1.0"}, opener=opener)[0]
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=502, detail="Impossible de lire l'inventaire qBittorrent.")
+
+
+def _qbit_post(base: str, opener, endpoint: str, params: dict):
+    data = urllib.parse.urlencode(params).encode()
+    headers = {"User-Agent": "LinkManager/1.0", "Referer": base + "/", "Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        return _request_json_method(base + endpoint, "POST", headers, opener, data)[0]
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"qBittorrent a refusé l'action (HTTP {exc.code}).")
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=502, detail="Action qBittorrent impossible.")
+
+
+def _arr_request(service: str, endpoint: str, method: str = "GET", payload: dict | None = None):
+    cfg = _integration_config(service)
+    if not cfg["url"] or not cfg["api_key"]:
+        raise HTTPException(status_code=503, detail=f"{service.title()} n'est pas configuré.")
+    try:
+        base = _safe_base_url(cfg["url"])
+        headers = {"Accept": "application/json", "X-Api-Key": cfg["api_key"], "User-Agent": "LinkManager/1.0"}
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        versions = ["v3", "v5"] if service == "SONARR" else ["v3"]
+        last_error = None
+        for version in versions:
+            url = f"{base}/api/{version}/{endpoint.lstrip('/')}"
+            try:
+                return _request_json_method(url, method, headers, data=data)[0]
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                if exc.code == 404 and version != versions[-1]:
+                    continue
+                if exc.code in (401, 403):
+                    raise HTTPException(status_code=502, detail=f"Clé API ou autorisation {service.title()} refusée.")
+                if exc.code == 404:
+                    raise HTTPException(status_code=404, detail=f"Élément {service.title()} introuvable.")
+                raise HTTPException(status_code=502, detail=f"{service.title()} a refusé l'action (HTTP {exc.code}).")
+        if last_error:
+            raise HTTPException(status_code=502, detail=f"API {service.title()} indisponible.")
+    except HTTPException:
+        raise
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=502, detail=f"Connexion {service.title()} impossible.")
+
+
+def _mapped_local_path(service: str, remote_path: str) -> Path | None:
+    mapped = _map_service_path(service, remote_path)
+    if not mapped:
+        return None
+    try:
+        candidate = (ROOT / mapped.lstrip("/")).resolve()
+        candidate.relative_to(ROOT)
+        return candidate
+    except (ValueError, OSError):
+        return None
+
+
+def _local_metadata(service: str, remote_path: str) -> dict:
+    local = _mapped_local_path(service, remote_path)
+    result = {"local_path": None, "mapped": local is not None, "exists": False,
+              "size": None, "device": None, "inode": None, "nlink": None}
+    if local is None:
+        return result
+    result["local_path"] = "/" + str(local.relative_to(ROOT)) if local != ROOT else "/"
+    try:
+        if local.is_symlink() or not local.is_file():
+            return result
+        st = local.stat(follow_symlinks=False)
+        result.update({"exists": True, "size": st.st_size, "device": st.st_dev,
+                       "inode": st.st_ino, "nlink": st.st_nlink})
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def _sha256_bounded(path: Path, cache: dict, budget: dict) -> str | None:
+    key = str(path)
+    if key in cache:
+        return cache[key]
+    try:
+        st = path.stat(follow_symlinks=False)
+        if path.is_symlink() or not path.is_file() or st.st_size > MAX_AUDIT_HASH_FILE_BYTES:
+            cache[key] = None
+            return None
+        if budget["bytes"] + st.st_size > MAX_AUDIT_HASH_TOTAL_BYTES or budget["files"] >= MAX_AUDIT_HASH_PAIRS * 2:
+            cache[key] = None
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        budget["bytes"] += st.st_size
+        budget["files"] += 1
+        cache[key] = digest.hexdigest()
+        return cache[key]
+    except OSError:
+        cache[key] = None
+        return None
+
+
+def _build_audit_inventory():
+    base, opener = _qbit_session()
+    raw_torrents = _qbit_json(base, opener, "/api/v2/torrents/info", {"limit": str(MAX_AUDIT_TORRENTS)})
+    if not isinstance(raw_torrents, list):
+        raise HTTPException(status_code=502, detail="Réponse qBittorrent inattendue.")
+    torrent_records = []
+    truncated_torrents = len(raw_torrents) >= MAX_AUDIT_TORRENTS
+    scanned_torrent_files = 0
+    for torrent in raw_torrents:
+        torrent_hash = str(torrent.get("hash", "")).lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", torrent_hash):
+            continue
+        torrent_record = {"hash": torrent_hash, "name": str(torrent.get("name", ""))[:240],
+                          "state": str(torrent.get("state", ""))[:80],
+                          "save_path": str(torrent.get("save_path", ""))[:1024],
+                          "size": torrent.get("size") if isinstance(torrent.get("size"), (int, float)) else None,
+                          "files": []}
+        files = _qbit_json(base, opener, "/api/v2/torrents/files", {"hash": torrent_hash})
+        if not isinstance(files, list):
+            files = []
+        for item in files:
+            if scanned_torrent_files >= MAX_AUDIT_FILES:
+                break
+            name = str(item.get("name", ""))[:2048]
+            remote = posixpath.normpath(posixpath.join(str(torrent.get("save_path", "")), name))
+            metadata = _local_metadata("QBITTORRENT", remote)
+            size = item.get("size") if isinstance(item.get("size"), (int, float)) else metadata["size"]
+            record = {"torrent_hash": torrent_hash, "torrent_name": torrent_record["name"],
+                      "name": posixpath.basename(name), "remote_path": remote,
+                      "size": size, **metadata}
+            torrent_record["files"].append(record)
+            scanned_torrent_files += 1
+        torrent_records.append(torrent_record)
+        if scanned_torrent_files >= MAX_AUDIT_FILES:
+            break
+
+    library_records = []
+    for service, endpoint, id_field, parent_field, label in (
+        ("RADARR", "moviefile", "id", "movieId", "film"),
+        ("SONARR", "episodefile", "id", "seriesId", "série"),
+    ):
+        if not _integration_config(service)["url"] or not _integration_config(service)["api_key"]:
+            continue
+        try:
+            entries = _get_arr_data(service, endpoint)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError, HTTPException):
+            logger.warning("Audit library inventory unavailable service=%s", service)
+            continue
+        if not isinstance(entries, list):
+            continue
+        for item in entries[:MAX_AUDIT_FILES]:
+            remote = str(item.get("path", ""))
+            metadata = _local_metadata(service, remote)
+            library_records.append({
+                "service": service, "kind": label, "file_id": item.get(id_field),
+                "item_id": item.get(parent_field), "name": posixpath.basename(remote),
+                "remote_path": remote[:2048], "size": item.get("size") if isinstance(item.get("size"), (int, float)) else metadata["size"],
+                **metadata,
+            })
+            if len(library_records) >= MAX_AUDIT_FILES:
+                break
+    return torrent_records, library_records, truncated_torrents, scanned_torrent_files
+
+
+
+
+def _qbit_content_references(local_path: Path):
+    """Find torrents whose mapped content path is the file or a parent directory of it."""
+    cfg = _integration_config("QBITTORRENT")
+    if not cfg["url"] or not cfg["username"] or not cfg["password"]:
+        raise HTTPException(status_code=409, detail="qBittorrent doit être configuré pour vérifier les références avant de supprimer ce fichier.")
+    base, opener = _qbit_session()
+    torrents = _qbit_json(base, opener, "/api/v2/torrents/info", {"limit": "500"})
+    if not isinstance(torrents, list):
+        raise HTTPException(status_code=409, detail="Inventaire qBittorrent invalide ; suppression refusée.")
+    if len(torrents) >= 500:
+        raise HTTPException(status_code=409, detail="Plus de 500 torrents : vérification des références incomplète, suppression refusée.")
+    target = local_path.resolve()
+    refs = []
+    for torrent in torrents:
+        content = str(torrent.get("content_path", ""))
+        mapped = _mapped_local_path("QBITTORRENT", content)
+        if mapped is None:
+            continue
+        try:
+            target.relative_to(mapped.resolve())
+            refs.append({"hash": str(torrent.get("hash", "")), "name": str(torrent.get("name", "")),
+                         "content_path": content, "local_path": str(mapped)})
+        except ValueError:
+            continue
+    return refs
+
+def _arr_file_references():
+    """Return mapped file paths currently referenced by Radarr/Sonarr."""
+    references = []
+    for service, endpoint, id_field, parent_field in (
+        ("RADARR", "moviefile", "id", "movieId"),
+        ("SONARR", "episodefile", "id", "seriesId"),
+    ):
+        cfg = _integration_config(service)
+        if not cfg["url"] or not cfg["api_key"]:
+            raise HTTPException(status_code=409, detail=f"Configure {service.title()} avant toute suppression de fichier pour vérifier les références croisées.")
+        try:
+            entries = _get_arr_data(service, endpoint)
+        except Exception:
+            # Fail closed for destructive actions if an enabled service cannot be checked.
+            raise HTTPException(status_code=409, detail=f"Impossible de vérifier les références de fichiers dans {service.title()} ; action refusée.")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=409, detail=f"Inventaire des fichiers invalide dans {service.title()} ; action refusée.")
+        for entry in entries:
+            remote = str(entry.get("path", ""))
+            local = _mapped_local_path(service, remote)
+            if local is not None:
+                references.append({"service": service, "file_id": entry.get(id_field),
+                                   "item_id": entry.get(parent_field), "remote_path": remote,
+                                   "local_path": str(local)})
+    return references
+
+@app.get("/api/audit")
+def audit(user: str = Depends(authenticate)):
+    """Read-only cross-check of torrent files, media-library files, and actual filesystem identities."""
+    try:
+        torrents, library, truncated_torrents, scanned_torrent_files = _build_audit_inventory()
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Cross-application audit failed")
+        raise HTTPException(status_code=502, detail="Le diagnostic croisé a échoué. Consulte les journaux du conteneur.")
+    torrent_files = [f for t in torrents for f in t["files"]]
+    # Index by actual filesystem identity first, then by filename and size for bounded content checks.
+    identity_index = {}
+    candidate_index = {}
+    for f in library:
+        if f["exists"] and f["device"] is not None and f["inode"] is not None:
+            identity_index.setdefault((f["device"], f["inode"]), []).append(f)
+        if f["size"] is not None:
+            candidate_index.setdefault((f["name"].casefold(), f["size"]), []).append(f)
+    matched_torrents = set()
+    matched_library = set()
+    matches = []
+    potential_hardlinks = []
+    hash_cache = {}
+    hash_budget = {"bytes": 0, "files": 0}
+    pair_checks = 0
+    for index, torrent_file in enumerate(torrent_files):
+        if torrent_file["exists"]:
+            peers = identity_index.get((torrent_file["device"], torrent_file["inode"]), [])
+            for peer in peers:
+                matched_torrents.add(index)
+                matched_library.add(id(peer))
+                matches.append({"status": "hardlink_confirmed", "torrent": torrent_file, "library": peer})
+        if torrent_file["size"] is None:
+            continue
+        candidates = candidate_index.get((torrent_file["name"].casefold(), torrent_file["size"]), [])
+        for peer in candidates:
+            if not torrent_file["exists"] or not peer["exists"]:
+                continue
+            if torrent_file["device"] == peer["device"] and torrent_file["inode"] == peer["inode"]:
+                continue
+            pair_checks += 1
+            if pair_checks > MAX_AUDIT_HASH_PAIRS:
+                break
+            tpath = ROOT / str(torrent_file["local_path"]).lstrip("/")
+            lpath = ROOT / str(peer["local_path"]).lstrip("/")
+            left_hash = _sha256_bounded(tpath, hash_cache, hash_budget)
+            right_hash = _sha256_bounded(lpath, hash_cache, hash_budget)
+            if left_hash and right_hash and left_hash == right_hash:
+                matched_torrents.add(index)
+                matched_library.add(id(peer))
+                potential_hardlinks.append({"status": "identical_copy_can_be_hardlinked",
+                                            "torrent": torrent_file, "library": peer,
+                                            "note": "Contenu identique confirmé par SHA-256 ; les deux chemins doivent être sur le même système de fichiers pour créer un hardlink."})
+            elif left_hash and right_hash:
+                # Same name and size but different content: not a candidate.
+                continue
+            else:
+                potential_hardlinks.append({"status": "unverified_name_size_candidate",
+                                            "torrent": torrent_file, "library": peer,
+                                            "note": "Même nom et même taille, mais comparaison de contenu non réalisée (limite de diagnostic)."})
+    for item in matches:
+        item["key"] = (item["torrent"]["torrent_hash"], item["torrent"]["remote_path"], item["library"]["service"], item["library"]["file_id"])
+    hardlink_count = sum(1 for m in matches if m["status"] == "hardlink_confirmed")
+    identical_count = sum(1 for m in potential_hardlinks if m["status"] == "identical_copy_can_be_hardlinked")
+    return {
+        "read_only": True,
+        "summary": {
+            "torrents_scanned": len(torrents), "torrent_files_scanned": scanned_torrent_files,
+            "library_files_scanned": len(library), "confirmed_hardlink_pairs": hardlink_count,
+            "identical_copy_pairs": identical_count, "unverified_candidates": sum(1 for m in potential_hardlinks if m["status"] == "unverified_name_size_candidate"),
+            "torrent_files_without_library_match": sum(1 for i, f in enumerate(torrent_files) if i not in matched_torrents),
+            "library_files_without_torrent_match": sum(1 for f in library if id(f) not in matched_library),
+            "hash_bytes_read": hash_budget["bytes"], "hash_files_read": hash_budget["files"],
+        },
+        "matches": matches[:1000],
+        "potential_hardlinks": potential_hardlinks[:500],
+        "torrent_only": [f for i, f in enumerate(torrent_files) if i not in matched_torrents][:500],
+        "library_only": [f for f in library if id(f) not in matched_library][:500],
+        "torrents": [{"hash": t["hash"], "name": t["name"], "state": t["state"], "size": t["size"],
+                      "files_count": len(t["files"]), "unmapped_files": sum(1 for f in t["files"] if not f["mapped"])}
+                     for t in torrents],
+        "library_items": [{"service": f["service"], "kind": f["kind"], "file_id": f["file_id"],
+                           "item_id": f["item_id"], "name": f["name"], "remote_path": f["remote_path"],
+                           "local_path": f["local_path"], "exists": f["exists"], "mapped": f["mapped"],
+                           "size": f["size"], "nlink": f["nlink"]} for f in library],
+        "warnings": [
+            "Un fichier sans correspondance n'est pas nécessairement orphelin : un torrent peut être en seed sans bibliothèque, et une bibliothèque peut rester après suppression du torrent.",
+            "Les candidats fondés seulement sur le nom et la taille ne sont pas des correspondances confirmées.",
+            "Le diagnostic est borné : maximum 200 torrents, 5 000 fichiers et 4 Gio de lecture SHA-256 par analyse.",
+            "Aucune donnée n'a été modifiée. Toutes les actions destructives exigent une confirmation explicite."
+        ],
+        "truncated": {"torrents": truncated_torrents, "torrent_files": scanned_torrent_files >= MAX_AUDIT_FILES,
+                      "hash_comparison": pair_checks > MAX_AUDIT_HASH_PAIRS or hash_budget["bytes"] >= MAX_AUDIT_HASH_TOTAL_BYTES},
+    }
+
+
+@app.post("/api/actions/remove-torrent")
+def remove_torrent(payload: TorrentRemoval, user: str = Depends(authenticate)):
+    _require_manual_confirmation(payload)
+    torrent_hash = payload.torrent_hash.lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", torrent_hash):
+        raise HTTPException(status_code=400, detail="Hash torrent invalide.")
+    # When deleting data, require every torrent file to map into /media so its impact can be inspected.
+    if payload.delete_files:
+        base, opener = _qbit_session()
+        files = _qbit_json(base, opener, "/api/v2/torrents/files", {"hash": torrent_hash})
+        info = _qbit_json(base, opener, "/api/v2/torrents/info", {"hashes": torrent_hash})
+        if not isinstance(info, list) or not info:
+            raise HTTPException(status_code=404, detail="Torrent introuvable dans qBittorrent.")
+        if not isinstance(files, list) or not files:
+            raise HTTPException(status_code=409, detail="Impossible de vérifier les fichiers du torrent ; suppression des fichiers refusée.")
+        save_path = str(info[0].get("save_path", ""))
+        arr_references = _arr_file_references()
+        for item in files:
+            remote = posixpath.normpath(posixpath.join(save_path, str(item.get("name", ""))))
+            local = _mapped_local_path("QBITTORRENT", remote)
+            if local is None or not local.exists() or local.is_symlink() or not local.is_file():
+                raise HTTPException(status_code=409, detail="Au moins un fichier du torrent n'est pas mappé ou vérifiable sous /media. Retrait du torrent sans effacer ses fichiers possible.")
+            if any(ref["local_path"] == str(local) for ref in arr_references):
+                raise HTTPException(status_code=409, detail="Un fichier du torrent est aussi référencé directement par Radarr/Sonarr au même chemin. Retrait du torrent sans supprimer ses fichiers possible.")
+    base, opener = _qbit_session()
+    _qbit_post(base, opener, "/api/v2/torrents/delete", {"hashes": torrent_hash, "deleteFiles": "true" if payload.delete_files else "false"})
+    logger.warning("MANUAL_ACTION user=%s action=remove_torrent hash=%s delete_files=%s", user, torrent_hash, payload.delete_files)
+    return {"status": "removed", "torrent_hash": torrent_hash, "files_deleted": payload.delete_files}
+
+
+@app.post("/api/actions/remove-library-file")
+def remove_library_file(payload: ArrFileRemoval, user: str = Depends(authenticate)):
+    _require_manual_confirmation(payload)
+    endpoint = "moviefile" if payload.service == "RADARR" else "episodefile"
+    # Resolve the file through the service API first and refuse paths that cannot be mapped and checked.
+    item = _arr_request(payload.service, f"{endpoint}/{payload.file_id}", "GET")
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=502, detail="Réponse inattendue de l'application.")
+    remote = str(item.get("path", ""))
+    local = _mapped_local_path(payload.service, remote)
+    if local is None or not local.exists() or local.is_symlink() or not local.is_file():
+        raise HTTPException(status_code=409, detail="Chemin non associé ou fichier non vérifiable sous /media ; suppression refusée.")
+    references = _arr_file_references()
+    same_path_references = [ref for ref in references
+                            if ref["local_path"] == str(local)
+                            and not (ref["service"] == payload.service and ref["file_id"] == payload.file_id)]
+    if same_path_references:
+        raise HTTPException(status_code=409, detail="Ce chemin est référencé par un autre fichier de bibliothèque. Résous cette référence avant de supprimer.")
+    torrent_references = _qbit_content_references(local)
+    if torrent_references:
+        raise HTTPException(status_code=409, detail="Ce fichier est situé dans le contenu d'un torrent qBittorrent. Retire d'abord le torrent ou utilise un hardlink distinct après vérification.")
+    # This removes the library file path only. If it is a hardlink, other names remain intact.
+    _arr_request(payload.service, f"{endpoint}/{payload.file_id}", "DELETE")
+    logger.warning("MANUAL_ACTION user=%s action=remove_library_file service=%s file_id=%s path=%s nlink=%s",
+                   user, payload.service, payload.file_id, remote, local.stat().st_nlink if local.exists() else "removed")
+    return {"status": "removed", "service": payload.service, "file_id": payload.file_id,
+            "path": "/" + str(local.relative_to(ROOT)), "note": "Suppression du chemin bibliothèque demandée ; les autres hardlinks éventuels restent en place."}
+
+
+@app.post("/api/actions/unmonitor")
+def unmonitor_item(payload: ArrItemAction, user: str = Depends(authenticate)):
+    _require_manual_confirmation(payload)
+    endpoint = "movie" if payload.service == "RADARR" else "series"
+    item = _arr_request(payload.service, f"{endpoint}/{payload.item_id}", "GET")
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=404, detail="Élément introuvable.")
+    item["monitored"] = False
+    _arr_request(payload.service, f"{endpoint}/{payload.item_id}", "PUT", item)
+    logger.warning("MANUAL_ACTION user=%s action=unmonitor service=%s item_id=%s", user, payload.service, payload.item_id)
+    return {"status": "unmonitored", "service": payload.service, "item_id": payload.item_id}
+
+
+@app.post("/api/actions/remove-library-item")
+def remove_library_item(payload: ArrItemAction, user: str = Depends(authenticate)):
+    _require_manual_confirmation(payload)
+    endpoint = "movie" if payload.service == "RADARR" else "series"
+    # Deliberately never delete files here; remove the library entry and add an exclusion to avoid re-import.
+    exclusion_param = "addImportExclusion" if payload.service == "RADARR" else "addImportListExclusion"
+    query = urllib.parse.urlencode({"deleteFiles": "false", exclusion_param: "true"})
+    _arr_request(payload.service, f"{endpoint}/{payload.item_id}?{query}", "DELETE")
+    logger.warning("MANUAL_ACTION user=%s action=remove_library_item service=%s item_id=%s files_deleted=false",
+                   user, payload.service, payload.item_id)
+    return {"status": "removed_from_library", "service": payload.service, "item_id": payload.item_id,
+            "files_deleted": False, "monitoring": "stopped", "exclusion_added": True}
+
+
+@app.post("/api/actions/remove-empty-folder")
+def remove_empty_folder(payload: EmptyFolderRemoval, user: str = Depends(authenticate)):
+    _require_manual_confirmation(payload)
+    target = safe_path(payload.path)
+    if target == ROOT or target.is_symlink() or not target.exists() or not target.is_dir():
+        raise HTTPException(status_code=400, detail="Seul un sous-dossier ordinaire existant peut être ciblé.")
+    try:
+        target.rmdir()  # Fails safely if the directory is not empty.
+    except OSError as exc:
+        if exc.errno in (39, 66):  # ENOTEMPTY on Linux/macOS
+            raise HTTPException(status_code=409, detail="Le dossier n'est pas vide ; aucun contenu n'a été supprimé.")
+        raise HTTPException(status_code=400, detail="Impossible de supprimer ce dossier.")
+    logger.warning("MANUAL_ACTION user=%s action=remove_empty_folder path=%s", user, payload.path)
+    return {"status": "removed", "path": payload.path, "only_if_empty": True}
+
+
+
 @app.get("/api/search")
 def search(q: str = Query(min_length=1, max_length=200), path: str = Query(default="/"),
            user: str = Depends(authenticate)):

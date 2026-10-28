@@ -12,7 +12,7 @@ header{height:66px;display:flex;align-items:center;gap:12px;padding:0 24px;borde
 button,input{font:inherit}button{cursor:pointer;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--text);padding:9px 12px}button:hover{border-color:var(--accent)}button.primary{background:#6378e8;border-color:#6378e8;color:white}button:disabled{opacity:.45;cursor:not-allowed}
 main{max-width:1500px;margin:auto;padding:24px}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:20px}.stat,.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px}.stat{padding:16px}.stat .label{color:var(--muted);font-size:12px}.stat .value{font-size:21px;font-weight:700;margin-top:5px}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}.path{flex:1;min-width:180px;color:var(--muted);padding:9px 12px;background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow-wrap:anywhere}
-.panel{overflow:hidden}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:720px}th{text-align:left;color:var(--muted);font-size:12px;font-weight:600;background:#1c2230}th,td{padding:12px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}tbody tr:hover{background:#202638}tr.selected{background:#252e49}.namecell{display:flex;gap:10px;align-items:center}.fileicon{font-size:18px;width:22px;text-align:center}.filename{overflow-wrap:anywhere}.sub{font-size:11px;color:var(--muted)}.pill{display:inline-flex;border-radius:99px;padding:3px 8px;font-size:11px;background:#30384b;color:#c5cce0}.pill.yes{background:#193b31;color:var(--green)}.pill.no{background:#393126;color:var(--amber)}.muted{color:var(--muted)}.status{min-height:24px;margin:12px 0;color:var(--muted)}.detail{padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.detail h3{margin:0 0 8px}.detail .full{grid-column:1/-1}.field{display:flex;flex-direction:column;gap:6px}.field input{border:1px solid var(--line);border-radius:8px;padding:10px;background:#101520;color:var(--text);min-width:0}.actions{display:flex;gap:8px;flex-wrap:wrap}.empty{text-align:center;padding:36px;color:var(--muted)}footer{color:var(--muted);font-size:12px;margin-top:16px}
+.panel{overflow:hidden}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:720px}th{text-align:left;color:var(--muted);font-size:12px;font-weight:600;background:#1c2230}th,td{padding:12px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}tbody tr:hover{background:#202638}tr.selected{background:#252e49}.namecell{display:flex;gap:10px;align-items:center}.fileicon{font-size:18px;width:22px;text-align:center}.filename{overflow-wrap:anywhere}.sub{font-size:11px;color:var(--muted)}.pill{display:inline-flex;border-radius:99px;padding:3px 8px;font-size:11px;background:#30384b;color:#c5cce0}.pill.yes{background:#193b31;color:var(--green)}.pill.no{background:#393126;color:var(--amber)}.muted{color:var(--muted)}.status{min-height:24px;margin:12px 0;color:var(--muted)}.detail{padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.detail h3{margin:0 0 8px}.detail .full{grid-column:1/-1}.field{display:flex;flex-direction:column;gap:6px}.field input{border:1px solid var(--line);border-radius:8px;padding:10px;background:#101520;color:var(--text);min-width:0}.actions{display:flex;gap:8px;flex-wrap:wrap}.empty{text-align:center;padding:36px;color:var(--muted)}.audit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:12px 0}.audit-stat{padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--panel2)}.audit-stat b{display:block;font-size:19px}.audit-table{min-width:760px}h4{margin:18px 0 8px}footer{color:var(--muted);font-size:12px;margin-top:16px}
 @media(max-width:700px){main{padding:14px}.stats{grid-template-columns:1fr}.detail{grid-template-columns:1fr}.detail .full{grid-column:auto}header{padding:0 14px}}
 </style>
 </head>
@@ -25,6 +25,36 @@ main{max-width:1500px;margin:auto;padding:24px}.stats{display:grid;grid-template
  <div class="stat"><div class="label">Dossier actuel</div><div class="value" id="current" style="font-size:14px;overflow-wrap:anywhere">/</div></div>
 </section>
 <section class="panel" style="padding:16px;margin-bottom:16px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><h3 style="margin:0 0 4px">Intégrations en lecture seule</h3><div class="muted">qBittorrent · Radarr · Sonarr — diagnostic manuel, aucune action sur les téléchargements</div></div><button id="refreshIntegrations">Tester les connexions</button></div><div id="integrationStatus" class="status">Configuration des connexions via les variables d’environnement Docker.</div><div id="integrationDetails" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px"></div></section>
+
+<section class="panel" style="padding:16px;margin-bottom:16px">
+ <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <div style="flex:1;min-width:220px"><h3 style="margin:0 0 4px">Diagnostic croisé des médias</h3><div class="muted">qBittorrent ↔ Radarr ↔ Sonarr ↔ fichiers sur disque. Analyse lancée uniquement à la demande.</div></div>
+  <button class="primary" id="runAudit">Analyser les médias</button>
+ </div>
+ <div id="auditStatus" class="status">Aucune analyse lancée. Le diagnostic ne modifie aucun fichier ni aucune application.</div>
+ <div id="auditSummary" class="audit-grid"></div>
+ <div id="auditWarnings" class="muted" style="margin:10px 0"></div>
+ <h4>Copies identiques ou candidates à un hardlink</h4>
+ <div class="tablewrap"><table><thead><tr><th>Fichier torrent</th><th>Fichier bibliothèque</th><th>Diagnostic</th><th>Action</th></tr></thead><tbody id="auditCandidates"></tbody></table></div>
+ <div class="empty" id="auditCandidatesEmpty" hidden>Aucun candidat détecté ou analyse non lancée.</div>
+ <h4>Fichiers torrent sans correspondance dans la bibliothèque</h4>
+ <div class="tablewrap"><table><thead><tr><th>Fichier</th><th>Torrent</th><th>Chemin local</th><th>État</th></tr></thead><tbody id="auditTorrentOnly"></tbody></table></div>
+ <div class="empty" id="auditTorrentOnlyEmpty" hidden>Aucun résultat.</div>
+ <h4>Fichiers de bibliothèque sans correspondance torrent</h4>
+ <div class="tablewrap"><table><thead><tr><th>Application</th><th>Fichier</th><th>Chemin local</th><th>Action manuelle</th></tr></thead><tbody id="auditLibraryOnly"></tbody></table></div>
+ <div class="empty" id="auditLibraryOnlyEmpty" hidden>Aucun résultat.</div>
+ <h4>Torrents (actions manuelles)</h4>
+ <div class="tablewrap"><table><thead><tr><th>Torrent</th><th>État</th><th>Fichiers analysés</th><th>Actions</th></tr></thead><tbody id="auditTorrents"></tbody></table></div>
+ <h4>Films et séries (surveillance / bibliothèque)</h4>
+ <div class="tablewrap"><table><thead><tr><th>Application</th><th>Identifiant</th><th>Fichier</th><th>Actions</th></tr></thead><tbody id="auditItems"></tbody></table></div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px">
+  <label for="emptyFolderPath">Dossier local à retirer uniquement s'il est vide :</label>
+  <input id="emptyFolderPath" placeholder="/SSD2TO/Films/Dossier" style="padding:9px;border:1px solid var(--line);border-radius:8px;background:#101520;color:var(--text);min-width:220px;flex:1">
+  <button id="removeEmptyFolder">Supprimer le dossier vide…</button>
+ </div>
+ <div class="muted" style="margin-top:8px">Attention : « sans correspondance » ne signifie pas forcément « orphelin ». Les actions de suppression demandent de saisir SUPPRIMER. Le retrait d'un torrent peut conserver ses fichiers ou les supprimer ; la suppression d'un fichier Radarr/Sonarr ne retire pas automatiquement l'élément suivi.</div>
+</section>
+
 <div class="toolbar"><button id="up">↑ Parent</button><div class="path" id="path">/</div><input id="search" placeholder="Rechercher dans le dossier…" style="padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--text);min-width:190px"><button id="searchBtn">Rechercher</button><button id="clearSearch">Effacer</button></div>
 <section class="panel tablewrap"><table><thead><tr><th>Nom</th><th>Type</th><th>Taille</th><th>Hardlinks</th><th>Inode</th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty" hidden>Aucun élément à afficher.</div></section>
 <div class="status" id="status" role="status"></div>
@@ -57,6 +87,73 @@ async function loadIntegrations(){const target=$("integrationStatus"),details=$(
 $("inspect").onclick=async()=>{if(!selected)return;try{let d=await api("/api/info?path="+encodeURIComponent(selected.path));status(`${d.path} — inode ${d.inode}, ${d.nlink} hardlink(s), périphérique ${d.device}.`)}catch(e){status(e.message,true)}};
 $("create").onclick=async()=>{if(!selected)return;let dir=$("dest").value.trim()||"/";let name=$("destname").value.trim()||selected.name;let msg=`Créer un hardlink ?\n\nSource : ${selected.path}\nDestination : ${dir.replace(/\/$/,"")}/${name}\n\nLa destination doit être sur le même système de fichiers. Aucun fichier existant ne sera écrasé.`;if(!confirm(msg))return;
 try{let d=await api("/api/hardlink",{method:"POST",body:JSON.stringify({source:selected.path,destination_directory:dir,destination_name:$("destname").value.trim()||null,confirm:true})});status(`Hardlink créé : ${d.destination}`);$("destname").value="";load(currentPath)}catch(e){status(e.message,true)}};
+
+async function runAudit(){
+ const statusEl=$("auditStatus");statusEl.textContent="Analyse en cours… les fichiers sont comparés en lecture seule.";
+ $("runAudit").disabled=true;
+ try{
+  const d=await api("/api/audit");
+  const labels=[
+   ["Torrents analysés",d.summary.torrents_scanned],["Fichiers torrent",d.summary.torrent_files_scanned],
+   ["Fichiers bibliothèque",d.summary.library_files_scanned],["Hardlinks confirmés",d.summary.confirmed_hardlink_pairs],
+   ["Copies identiques",d.summary.identical_copy_pairs],["Candidats non vérifiés",d.summary.unverified_candidates],
+   ["Torrent sans correspondance",d.summary.torrent_files_without_library_match],["Bibliothèque sans torrent",d.summary.library_files_without_torrent_match]
+  ];
+  $("auditSummary").innerHTML=labels.map(([label,value])=>'<div class="audit-stat"><span class="muted">'+esc(label)+'</span><b>'+esc(value??"—")+'</b></div>').join("");
+  $("auditWarnings").textContent=(d.warnings||[]).join(" ");
+  const candidates=[...(d.matches||[]).filter(x=>x.status==="hardlink_confirmed"),...(d.potential_hardlinks||[])];
+  $("auditCandidates").innerHTML=candidates.slice(0,200).map(x=>{
+   const t=x.torrent||{},l=x.library||{};
+   const label=x.status==="hardlink_confirmed"?"Hardlink confirmé":x.status==="identical_copy_can_be_hardlinked"?"Contenu identique (SHA-256)":"Candidat non vérifié";
+   return '<tr><td>'+esc(t.name||t.remote_path||"—")+'<div class="sub">'+esc(t.local_path||"chemin non associé")+'</div></td><td>'+esc(l.name||l.remote_path||"—")+'<div class="sub">'+esc((l.service||"")+" · "+(l.local_path||"chemin non associé"))+'</div></td><td>'+esc(label)+'<div class="sub">'+esc(x.note||"Même inode et même périphérique.")+'</div></td><td>'+(l.service&&l.file_id!=null&&l.mapped&&l.exists?'<button data-action="remove-library-file" data-service="'+esc(l.service)+'" data-file-id="'+esc(l.file_id)+'">Retirer fichier bibliothèque…</button>':'—')+'</td></tr>';
+  }).join("");
+  $("auditCandidatesEmpty").hidden=candidates.length>0;
+  $("auditTorrentOnly").innerHTML=(d.torrent_only||[]).slice(0,200).map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+esc(f.torrent_name)+'<div class="sub">'+esc(f.torrent_hash)+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'</td><td>'+(!f.mapped?'<span class="pill no">Non associé</span>':!f.exists?'<span class="pill no">Absent du disque</span>':'À vérifier')+'</td></tr>').join("");
+  $("auditTorrentOnlyEmpty").hidden=(d.torrent_only||[]).length>0;
+  $("auditLibraryOnly").innerHTML=(d.library_only||[]).slice(0,200).map(f=>'<tr><td>'+esc(f.service)+'</td><td>'+esc(f.name)+'<div class="sub">ID fichier '+esc(f.file_id??"—")+'</div></td><td>'+esc(f.local_path||"chemin non associé")+'<div class="sub">'+(f.exists?"Présent":"Absent / non vérifiable")+'</div></td><td><button data-action="remove-library-file" data-service="'+esc(f.service)+'" data-file-id="'+esc(f.file_id)+'" '+(!f.mapped||!f.exists?"disabled":"")+'>Supprimer le fichier…</button></td></tr>').join("");
+  $("auditLibraryOnlyEmpty").hidden=(d.library_only||[]).length>0;
+  $("auditTorrents").innerHTML=(d.torrents||[]).map(t=>'<tr><td>'+esc(t.name)+'<div class="sub">'+esc(t.hash)+'</div></td><td>'+esc(t.state)+'</td><td>'+esc(t.files_count)+' · '+(t.unmapped_files?'<span class="pill no">'+esc(t.unmapped_files)+' non associé(s)</span>':'chemins associés')+'</td><td><div class="actions"><button data-action="remove-torrent" data-hash="'+esc(t.hash)+'" data-delete-files="false">Retirer le torrent (garder les fichiers)…</button><button data-action="remove-torrent" data-hash="'+esc(t.hash)+'" data-delete-files="true" '+(t.unmapped_files?"disabled":"")+'>Retirer torrent + fichiers…</button></div></td></tr>').join("");
+  const uniqueItems=new Map();
+  for(const f of d.library_items||[]){if(f.item_id!=null)uniqueItems.set(f.service+":"+f.item_id,{...f});}
+  $("auditItems").innerHTML=Array.from(uniqueItems.values()).map(f=>'<tr><td>'+esc(f.service)+'</td><td>'+esc(f.item_id)+'</td><td>'+esc(f.name||"—")+'<div class="sub">'+esc(f.remote_path||"")+'</div></td><td><div class="actions"><button data-action="unmonitor" data-service="'+esc(f.service)+'" data-item-id="'+esc(f.item_id)+'">Désactiver la surveillance…</button><button data-action="remove-library-item" data-service="'+esc(f.service)+'" data-item-id="'+esc(f.item_id)+'">Retirer de la bibliothèque…</button></div></td></tr>').join("");
+  statusEl.textContent="Diagnostic terminé en lecture seule. "+(d.truncated?.torrents||d.truncated?.torrent_files||d.truncated?.hash_comparison?"Attention : certaines limites de scan ont été atteintes. ":"")+"Aucune donnée n'a été modifiée.";
+ }catch(e){statusEl.textContent="Échec du diagnostic : "+e.message;}
+ finally{$("runAudit").disabled=false;}
+}
+async function runManualAction(button){
+ const action=button.dataset.action;
+ const service=button.dataset.service;
+ const fileId=Number(button.dataset.fileId);
+ const itemId=Number(button.dataset.itemId);
+ const hash=button.dataset.hash;
+ const deleteFiles=button.dataset.deleteFiles==="true";
+ let endpoint="",payload={},description="";
+ if(action==="remove-torrent"){endpoint="/api/actions/remove-torrent";payload={torrent_hash:hash,delete_files:deleteFiles};description=deleteFiles?"Retirer ce torrent ET demander à qBittorrent de supprimer ses fichiers":"Retirer ce torrent de qBittorrent en conservant les fichiers";}
+ else if(action==="remove-library-file"){endpoint="/api/actions/remove-library-file";payload={service,file_id:fileId};description="Supprimer le fichier de la bibliothèque "+service+" (les autres hardlinks restent en place si présents)";}
+ else if(action==="unmonitor"){endpoint="/api/actions/unmonitor";payload={service,item_id:itemId};description="Désactiver la surveillance de cet élément dans "+service;}
+ else if(action==="remove-library-item"){endpoint="/api/actions/remove-library-item";payload={service,item_id:itemId};description="Retirer cet élément de "+service+" et arrêter sa surveillance, sans supprimer les fichiers sur disque";}
+ if(!endpoint)return;
+ const answer=prompt(description+".\n\nVérifie l'action, puis saisis exactement SUPPRIMER pour confirmer.");
+ if(answer!=="SUPPRIMER")return;
+ button.disabled=true;
+ try{const result=await api(endpoint,{method:"POST",body:JSON.stringify({...payload,confirm_text:answer})});await runAudit();$("auditStatus").textContent="Action exécutée : "+description+". "+(result.note||"");}
+ catch(e){$("auditStatus").textContent="Action refusée ou échouée : "+e.message;button.disabled=false;}
+}
+$("runAudit").onclick=runAudit;
+$("auditCandidates").addEventListener("click",e=>{const b=e.target.closest("button[data-action]");if(b)runManualAction(b)});
+$("auditTorrentOnly").addEventListener("click",e=>{const b=e.target.closest("button[data-action]");if(b)runManualAction(b)});
+$("auditLibraryOnly").addEventListener("click",e=>{const b=e.target.closest("button[data-action]");if(b)runManualAction(b)});
+$("auditTorrents").addEventListener("click",e=>{const b=e.target.closest("button[data-action]");if(b)runManualAction(b)});
+$("auditItems").addEventListener("click",e=>{const b=e.target.closest("button[data-action]");if(b)runManualAction(b)});
+$("removeEmptyFolder").onclick=async()=>{
+ const path=$("emptyFolderPath").value.trim();
+ if(!path){$("auditStatus").textContent="Indique un chemin de dossier sous /media.";return;}
+ const answer=prompt("Supprimer uniquement le dossier s'il est vide : "+path+"\n\nSaisis exactement SUPPRIMER pour confirmer.");
+ if(answer!=="SUPPRIMER")return;
+ try{await api("/api/actions/remove-empty-folder",{method:"POST",body:JSON.stringify({path,confirm_text:answer})});$("auditStatus").textContent="Dossier vide supprimé : "+path;$("emptyFolderPath").value="";}
+ catch(e){$("auditStatus").textContent=e.message;}
+};
+
 (async()=>{try{await api("/api/health");$("health").textContent="Connecté";load("/")}catch(e){$("health").textContent="Authentification / erreur";status(e.message,true)}})();
 </script>
 </body></html>

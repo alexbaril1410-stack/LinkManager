@@ -28,6 +28,13 @@ Le conteneur tourne avec UID/GID 10001. Cet utilisateur doit avoir les droits de
 
 ## Intégrations qBittorrent, Radarr et Sonarr
 
-LinkManager peut interroger ces applications en **lecture seule** pour afficher l'état des connexions, les torrents, les bibliothèques et les chemins racines. Il ne met pas en pause/reprise les torrents et ne modifie pas Radarr ou Sonarr.
+LinkManager interroge ces applications pour le diagnostic en lecture seule. Des actions manuelles facultatives sont disponibles derrière une confirmation explicite ; aucune suppression ou modification n’est automatisée.
 
 Consulte [INTEGRATIONS.md](INTEGRATIONS.md) pour la configuration détaillée. Tous les paramètres sont définis directement dans `docker-compose.yml` ; aucun fichier `.env` n'est requis.
+
+
+## Diagnostic croisé et actions manuelles
+
+Le bouton **Analyser les médias** compare les fichiers torrent aux fichiers Radarr/Sonarr et à leurs chemins locaux, confirme les hardlinks par inode/périphérique et compare par SHA-256 un nombre limité de candidats. Les éléments sans correspondance sont des pistes de vérification, jamais une preuve suffisante pour supprimer.
+
+Les actions de suppression ou de modification sont lancées manuellement et nécessitent de saisir `SUPPRIMER`. Le retrait d'un élément Radarr/Sonarr conserve ses fichiers ; la suppression des fichiers du torrent est une option séparée. Les dossiers ne peuvent être supprimés par l'outil que s'ils sont vides.
