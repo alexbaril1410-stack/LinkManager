@@ -978,11 +978,14 @@ def audit(user: str = Depends(authenticate)):
     hash_budget = {"bytes": 0, "files": 0}
     pair_checks = 0
     ignored_sidecar_count = sum(1 for f in torrent_files if _audit_is_ignored_sidecar(f))
-    ignored_book_chapter_indices = _audit_book_chapter_indices(torrent_files)
-    ignored_book_chapter_count = len(ignored_book_chapter_indices)
+    book_chapter_indices = _audit_book_chapter_indices(torrent_files)
+    grouped_book_chapter_count = len(book_chapter_indices)
+    for i in book_chapter_indices:
+        torrent_files[i]["book_chapter_track"] = True
+    # Chapter tracks stay in the audit and can match their library counterparts;
+    # the UI groups unmatched tracks into one row to avoid flooding the results.
     audited_torrent_indices = {
-        i for i, f in enumerate(torrent_files)
-        if not _audit_is_ignored_sidecar(f) and i not in ignored_book_chapter_indices
+        i for i, f in enumerate(torrent_files) if not _audit_is_ignored_sidecar(f)
     }
     for index, torrent_file in enumerate(torrent_files):
         # Release sidecars and individually split audiobook chapter tracks are
@@ -1081,7 +1084,7 @@ def audit(user: str = Depends(authenticate)):
             "library_files_without_torrent_match": sum(1 for f in library if id(f) not in matched_library),
             "torrent_files_included_in_audit": len(audited_torrent_indices),
             "ignored_sidecar_files": ignored_sidecar_count,
-            "ignored_book_chapter_files": ignored_book_chapter_count,
+            "grouped_book_chapter_files": grouped_book_chapter_count,
             "hash_bytes_read": hash_budget["bytes"], "hash_files_read": hash_budget["files"],
         },
         "matches": matches[:1000],
