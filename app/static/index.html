@@ -116,7 +116,7 @@ async function runAudit(){
   const uniqueItems=new Map();
   for(const f of d.library_items||[]){if(f.item_id!=null)uniqueItems.set(f.service+":"+f.item_id,{...f});}
   $("auditItems").innerHTML=Array.from(uniqueItems.values()).map(f=>'<tr><td>'+esc(f.service)+'</td><td>'+esc(f.item_id)+'</td><td>'+esc(f.name||"—")+'<div class="sub">'+esc(f.remote_path||"")+'</div></td><td><div class="actions"><button data-action="unmonitor" data-service="'+esc(f.service)+'" data-item-id="'+esc(f.item_id)+'">Désactiver la surveillance…</button><button data-action="remove-library-item" data-service="'+esc(f.service)+'" data-item-id="'+esc(f.item_id)+'">Retirer de la bibliothèque…</button></div></td></tr>').join("");
-  statusEl.textContent="Diagnostic terminé en lecture seule. "+(d.truncated?.torrents||d.truncated?.torrent_files||d.truncated?.hash_comparison?"Attention : certaines limites de scan ont été atteintes. ":"")+"Aucune donnée n'a été modifiée.";
+  const cache=d.cache||{};const cacheLabel=cache.torrent_list_source==="cache" ? "Inventaire torrents réutilisé depuis SQLite ("+(cache.torrent_list_age_seconds||0)+" s ; "+(cache.torrent_file_cache_hits||0)+" listes de fichiers en cache, "+(cache.torrent_file_cache_misses||0)+" récupérées). " : "Inventaire torrents actualisé ; "+(cache.torrent_file_cache_hits||0)+" listes de fichiers en cache, "+(cache.torrent_file_cache_misses||0)+" récupérées. ";statusEl.textContent="Diagnostic terminé en lecture seule. "+cacheLabel+(d.truncated?.torrents||d.truncated?.torrent_files||d.truncated?.hash_comparison?"Attention : certaines limites de scan ont été atteintes. ":"")+"Aucune donnée n'a été modifiée.";
  }catch(e){statusEl.textContent="Échec du diagnostic : "+e.message;}
  finally{$("runAudit").disabled=false;}
 }
