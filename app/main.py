@@ -689,7 +689,7 @@ def _arr_file_references():
     ):
         cfg = _integration_config(service)
         if not cfg["url"] or not cfg["api_key"]:
-            continue
+            raise HTTPException(status_code=409, detail=f"Configure {service.title()} avant toute suppression de fichier pour vérifier les références croisées.")
         try:
             entries = _get_arr_data(service, endpoint)
         except Exception:
